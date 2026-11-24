@@ -16,7 +16,7 @@ interface SecretRow {
   updatedAt: number;
 }
 
-const LATEST_VERSION = "0.2.3";
+const LATEST_VERSION = "0.2.4";
 const CONTROLLER_ID = "macbook-pro";
 
 function nowSec(): number {

@@ -1654,6 +1654,11 @@ export function App() {
                   <span>{detailNode.os} · {detailNode.hw.cpuCores} cores · Rackdeck {detailNode.version}</span>
                   {detailNode.lanIp && <Copy value={detailNode.lanIp} />}
                   {detailNode.tailscaleIp && <Copy value={detailNode.tailscaleIp} />}
+                  {detailNode.connectEnabled && detailNode.connectSlug && (
+                    <a href={`https://${detailNode.connectSlug}.rackdev.app`} target="_blank" rel="noopener noreferrer">
+                      {detailNode.connectSlug}.rackdev.app
+                    </a>
+                  )}
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -1686,9 +1691,6 @@ export function App() {
                 )}
                 <a href="#/apps" className="btn btn-primary">Browse apps</a>
                 <button type="button" className="btn" onClick={() => openCustomImage(detailNode.id)}>Custom image</button>
-                <a href="#/network" className="btn">
-                  {detailNode.connectEnabled ? `${detailNode.connectSlug}.rackdev.app` : "Connect"}
-                </a>
               </div>
             </div>
 

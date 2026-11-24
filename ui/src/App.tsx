@@ -1225,6 +1225,7 @@ export function App() {
             <button
               type="button"
               className="search-trigger"
+              aria-label="Search"
               onClick={() => {
                 setCmdOpen(true);
                 setCmdSel(0);
@@ -1380,7 +1381,12 @@ export function App() {
                       >
                         <td>
                           <div className="machine-name">
-                            <span className={`dot ${n.status === "online" ? "ok" : "off"}`} />
+                            <span
+                              className={`dot ${n.status === "online" ? "ok" : "off"}`}
+                              role="img"
+                              aria-label={n.status === "online" ? "Online" : "Offline"}
+                              title={n.status === "online" ? "Online" : "Offline"}
+                            />
                             <a
                               href={`#/machines/${encodeURIComponent(n.id)}`}
                               className="machine-link"
@@ -2016,7 +2022,7 @@ export function App() {
                   Let an AI coding tool manage your machines
                   <Help title="MCP access">
                     <p>Claude Code, Codex, or Cursor connect to Rackdeck's built-in MCP server with a token and get a small set of tools.</p>
-                    <p>You choose what each token can do. Every call shows up in the Audit log, and you can revoke a token any time. Tokens never get SSH keys or a shell.</p>
+                    <p>You choose what each token can do. Starting, stopping, restarting and deploying apps show up in the Audit log. You can revoke a token any time. Tokens never get SSH keys or a shell.</p>
                   </Help>
                 </h2>
                 <div className="field" style={{ marginBottom: 14 }}>

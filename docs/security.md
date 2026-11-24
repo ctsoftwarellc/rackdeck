@@ -26,7 +26,7 @@ This page explains how Rackdeck's parts connect, what each connection protects, 
 
 - **No password, no network.** Without `RACKDECK_PASSWORD`, the dashboard listens on `127.0.0.1` only, so nothing else on your network can reach it. Setting a password opens it to your network.
 - **Sessions.** Logging in sets an `HttpOnly; SameSite=Lax` cookie. The dashboard's live connection rechecks the session on every message and every 5 seconds, and closes when you log out. That stops open terminals, log streams and live stats.
-- **Terminal.** Only the logged-in owner can open the terminal, and only on the dashboard's own machine. Each session is written to the audit log (which machine, when). Command text is not stored.
+- **Terminal.** Only the logged-in owner can open the terminal, and only on the dashboard's own machine. Each command is written to the audit log (which machine, when). Command text is not stored. Logging out stops new commands; one already running finishes.
 - **Connect needs a password.** Tunnel traffic reaches the dashboard from the machine itself, so the dashboard refuses to turn Connect on without a password.
 
 ## Joining a machine

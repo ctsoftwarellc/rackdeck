@@ -66,6 +66,10 @@
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
   body {
     background: var(--bg);
     color: var(--fg);
@@ -1076,7 +1080,7 @@
             <span class="dot"></span>
             <span>Open source (Apache-2.0) · ~6 MB file · ~13 MB RAM</span>
           </div>
-          <h1 class="hero-title">All your machines.<br />One clean, secure dashboard.</h1>
+          <h1 class="hero-title">One dashboard for<br />every machine you own.</h1>
           <p class="hero-sub">
             Manage your Mac, Linux GPU box, home server, and cloud VPS from one self-hosted dashboard. Check hardware and GPU metrics, manage Docker apps, push encrypted secrets, and stream live logs over LAN or Tailscale without opening router ports.
           </p>
@@ -1096,7 +1100,7 @@
           <div class="hero-reassure">
             <span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
-              Prebuilt for macOS (Apple Silicon) and Linux (x86_64), Windows through WSL
+              Prebuilt for macOS (Apple Silicon) and Linux (x86_64). On Windows, run the Linux build in WSL.
             </span>
             <span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1162,7 +1166,7 @@
         <div class="sec-head">
           <span class="sec-kicker">Made for real home &amp; cloud setups</span>
           <h2>One view for the boxes you actually run.</h2>
-          <p>Most server panels assume you only own Linux cloud VMs. Rackdeck is built for people who also keep a desktop GPU rig under the desk or a Mac in the office.</p>
+          <p>Rackdeck handles a GPU rig under your desk or a Mac in the office the same way it handles a Linux VPS.</p>
         </div>
 
         <div class="hw-grid">
@@ -1235,7 +1239,7 @@
               <h3>Reach home without router ports</h3>
               <span class="bento-pill">LAN &amp; Tailscale ready</span>
             </div>
-            <p>Detects Tailscale automatically on your network and works over home Wi-Fi or WireGuard. Want managed hosting and connectivity later? Rackdeck Cloud is coming soon.</p>
+            <p>Finds your Tailscale devices on its own and works over your home network. Rackdeck Cloud will add hosted connectivity when it opens.</p>
             <div class="bento-mini">
               <span><strong>Tailscale detection</strong> · read-only status check</span>
               <span class="ok">Available now</span>
@@ -1355,7 +1359,7 @@
               <span id="community-price-period">forever</span>
             </div>
             <div class="price-meta" id="community-price-note">Open source under Apache-2.0</div>
-            <p class="price-desc">Own your infrastructure. Host and manage Rackdeck yourself.</p>
+            <p class="price-desc">Run Rackdeck on your own machines.</p>
             <ul class="price-list">
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Open source (Apache-2.0)</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hosted</span></li>

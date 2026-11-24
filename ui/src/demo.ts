@@ -801,7 +801,7 @@ export function installDemo(): void {
 
     // Auth
     if (path === "/api/v1/auth/status") {
-      return jsonResponse({ passwordRequired: false, authenticated: true });
+      return jsonResponse({ passwordRequired: true, authenticated: true });
     }
     if (path === "/api/v1/auth/login" && method === "POST") {
       return jsonResponse({ ok: true });

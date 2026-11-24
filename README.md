@@ -30,13 +30,13 @@ curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='choose-a-strong-passwor
 
 The machine shows up within a few seconds. The command works once and expires after 15 minutes. The installer tries each of the dashboard's addresses (Tailscale and your home network) and uses the one that answers, sets the agent up as a service, and tells you plainly if something is wrong, such as an expired command.
 
-Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and authenticated both ways. On Windows, use WSL with systemd turned on; the installer explains how if it's off.
+Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and authenticated both ways. Older agents switch over on their first check-in after updating ([details](docs/security.md#check-ins-between-agents-and-the-dashboard)). On Windows, use WSL with systemd turned on; the installer explains how if it's off.
 
 ## What you can do
 
 - **See every machine at once.** Live CPU, memory, disk, network, and NVIDIA GPU use, VRAM and temperature. Machines that stop reporting show as offline within about 20 seconds.
 - **Manage apps.** Docker containers and local model servers (Ollama, vLLM, `mlx_lm`). Start, stop, restart, deploy an image, and follow logs.
-- **Use a terminal in the browser** on the dashboard's machine. Owner only, and each session goes in the audit log.
+- **Use a terminal in the browser** on the dashboard's machine. Owner only, and each command goes in the audit log.
 - **Push secrets to your machines.** Set an environment variable once, like `CLAUDE_CODE_OAUTH_TOKEN`, pick machines, and new terminals on those machines have it. Values are encrypted in storage and on the way.
 - **Let AI coding tools help.** The built-in MCP server lets Claude Code, Codex or Cursor read status or deploy apps with a token you scope and can revoke. Tokens never get a terminal.
 - **Update everything with one button.** When a new version is out, **Update all** updates each joined machine and then the dashboard, without reinstalling.

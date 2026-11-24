@@ -59,6 +59,27 @@ fn load_or_create_signing_key(db_path: &str) -> SigningKey {
     key
 }
 
+/// This machine's id, saved next to the database on first run. The hostname can change with the
+/// network (Mac.attlocal.net vs Mac), and a new id would make the dashboard show its own machine twice.
+fn dashboard_node(port: u16, db_path: &str) -> LocalNodeAdapter {
+    let node = LocalNodeAdapter::new(port);
+    if db_path == ":memory:" {
+        return node;
+    }
+    let id_path = std::path::Path::new(db_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("node-id");
+    match std::fs::read_to_string(&id_path).map(|s| s.trim().to_string()) {
+        Ok(id) if !id.is_empty() => node.with_node_id(id),
+        _ => {
+            let _ = std::fs::write(&id_path, node.node_id());
+            node
+        }
+    }
+}
+
 pub async fn build_all_in_one_state(
     port: u16,
     db_path: &str,
@@ -66,7 +87,7 @@ pub async fn build_all_in_one_state(
     embed_ui: bool,
 ) -> Result<ApiState, String> {
     let store = SqliteStore::open(db_path).map_err(|e| e.to_string())?;
-    let local_node = Arc::new(LocalNodeAdapter::new(port));
+    let local_node = Arc::new(dashboard_node(port, db_path));
     let initial_node = local_node.inspect_node().await.map_err(|e| e.to_string())?;
     let initial_apps = local_node.list_apps().await.unwrap_or_default();
     let initial_sample = local_node.sample().await.ok();

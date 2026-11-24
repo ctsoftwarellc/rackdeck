@@ -32,6 +32,18 @@ pub trait AssetProvider: Send + Sync {
     fn get_asset(&self, path: &str) -> Option<(Vec<u8>, String)>;
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequest {
+    pub key: String,
+    pub node_id: String,
+    pub name: String,
+    pub os: String,
+    pub ip: Option<String>,
+    pub code: String,
+    pub at: u64,
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     pub local_node_id: String,
@@ -49,6 +61,9 @@ pub struct ApiState {
     pub latest_apps: Arc<RwLock<Vec<ManagedApp>>>,
     pub remote_apps: Arc<RwLock<HashMap<String, Vec<ManagedApp>>>>,
     pub join_tokens: Arc<RwLock<HashMap<String, u64>>>,
+    /// Machines that found this dashboard on the home network and are waiting for the owner to click Allow.
+    /// Keyed by the agent's public key (hex).
+    pub join_requests: Arc<RwLock<HashMap<String, JoinRequest>>>,
     pub agent_bus: Arc<AgentBus>,
     pub owner_password: Option<String>,
     pub owner_sessions: Arc<RwLock<HashMap<String, u64>>>,
@@ -76,6 +91,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/join-token", post(issue_join_token))
         .route("/api/v1/agent/checkin", post(agent_checkin))
         .route("/api/v1/agent/join-check", get(join_check))
+        .route("/api/v1/join-requests", get(list_join_requests))
+        .route("/api/v1/join-requests/{key}", post(allow_join_request).delete(ignore_join_request))
         .route("/api/v1/pair", post(start_pairing))
         .route("/api/v1/connect", post(toggle_connect))
         .route("/api/v1/account", get(account_status))
@@ -349,7 +366,7 @@ async fn run_app_action(
 async fn require_owner_only(state: &ApiState, headers: &HeaderMap) -> Result<(), Response> {
     match resolve_principal(headers, state).await {
         Ok(Principal::Owner { .. }) => Ok(()),
-        Ok(_) => Err(err_res(CoreError::Forbidden("only the owner can manage secrets".into()))),
+        Ok(_) => Err(err_res(CoreError::Forbidden("only the owner can do this".into()))),
         Err(r) => Err(r),
     }
 }
@@ -645,6 +662,54 @@ struct AgentCheckinBody {
     secrets_version: Option<String>,
 }
 
+async fn list_join_requests(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    let now = now_unix_secs();
+    let mut reqs = state.join_requests.write().await;
+    reqs.retain(|_, r| now - r.at < 900);
+    let mut list: Vec<JoinRequest> = reqs.values().cloned().collect();
+    list.sort_by_key(|r| r.at);
+    Json(serde_json::json!({ "requests": list })).into_response()
+}
+
+/// Allow: record the machine's key, so its next check-in is accepted like any joined machine.
+async fn allow_join_request(State(state): State<ApiState>, headers: HeaderMap, Path(key): Path<String>) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    let Some(req) = state.join_requests.write().await.remove(&key) else {
+        return err_res(CoreError::NotFound("that request expired; run the install command on the machine again".into()));
+    };
+    if req.node_id == state.local_node_id {
+        return err_res(CoreError::Forbidden("that machine id belongs to the controller itself".into()));
+    }
+    if let Err(e) = state.fleet_repo.set_agent_key_hash(&req.node_id, &format!("x25519:{}", req.key)).await {
+        return err_res(e);
+    }
+    let ev = AuditEvent {
+        id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
+        ts: now_unix_secs(),
+        actor: "you (web)".into(),
+        action: "allow machine".into(),
+        target: req.node_id.clone(),
+        ok: true,
+        reason: None,
+    };
+    let _ = state.audit_repo.append_audit(ev.clone()).await;
+    let _ = state.ws_tx.send(ServerWsEvent::Audit { ev });
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+async fn ignore_join_request(State(state): State<ApiState>, headers: HeaderMap, Path(key): Path<String>) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    state.join_requests.write().await.remove(&key);
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
 /// One-time use. Expired tokens are dropped either way.
 async fn take_join_token(state: &ApiState, token: &str) -> bool {
     match state.join_tokens.write().await.remove(token) {
@@ -709,6 +774,20 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
         if stored.as_deref() != Some(want.as_str()) {
             let upgrading = matches!((&body.agent_key, &stored), (Some(k), Some(h)) if &sha(k) == h);
             joined = !upgrading;
+            if !upgrading && body.join_token.is_none() {
+                // Found us on the home network: wait for the owner to click Allow.
+                let key = hex::encode(a);
+                let now = now_unix_secs();
+                let mut reqs = state.join_requests.write().await;
+                reqs.retain(|_, r| now - r.at < 900);
+                if reqs.len() < 20 || reqs.contains_key(&key) {
+                    let ip = body.node.lan_ip.clone().or(body.node.tailscale_ip.clone());
+                    let code = seal::pair_code(&seal::public(&controller_channel_secret(&state)), &a);
+                    let r = JoinRequest { key: key.clone(), node_id: body.node.id.clone(), name: body.node.name.clone(), os: body.node.os.clone(), ip, code, at: now };
+                    reqs.insert(key, r);
+                }
+                return (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "waiting for approval", "pending": true }))).into_response();
+            }
             if !upgrading && !take_join_token(&state, body.join_token.as_deref().unwrap_or_default()).await {
                 return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
             }

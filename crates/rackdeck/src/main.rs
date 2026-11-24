@@ -111,6 +111,7 @@ pub async fn build_all_in_one_state(
         latest_apps: Arc::new(RwLock::new(initial_apps)),
         remote_apps: Arc::new(RwLock::new(HashMap::new())),
         join_tokens: Arc::new(RwLock::new(HashMap::new())),
+        join_requests: Arc::new(RwLock::new(HashMap::new())),
         agent_bus,
         owner_password: std::env::var("RACKDECK_PASSWORD").ok().filter(|s| !s.is_empty()),
         owner_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -180,6 +181,8 @@ struct AgentState {
     controller_key: Option<String>,
     /// This agent's channel secret (hex).
     channel_secret: Option<String>,
+    /// Dashboard addresses, comma-separated. `rackdeck doctor` reads them.
+    controllers: String,
 }
 
 fn hex32(s: &str) -> Option<[u8; 32]> {
@@ -205,6 +208,7 @@ fn save_agent_state(path: &std::path::Path, st: &AgentState) {
         "agentKey": st.agent_key,
         "controllerKey": st.controller_key,
         "channelSecret": st.channel_secret,
+        "controllers": st.controllers,
     })
     .to_string();
     if let Err(e) = std::fs::write(path, json) {
@@ -218,25 +222,20 @@ fn save_agent_state(path: &std::path::Path, st: &AgentState) {
     }
 }
 
-async fn run_remote_agent(
-    controller: String,
-    initial_token: String,
-    controller_key: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
+fn read_agent_state(path: &std::path::Path) -> Option<AgentState> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some(AgentState {
+        node_id: v["nodeId"].as_str().unwrap_or_default().to_string(),
+        agent_key: v["agentKey"].as_str().map(str::to_string),
+        controller_key: v["controllerKey"].as_str().map(str::to_string),
+        channel_secret: v["channelSecret"].as_str().map(str::to_string),
+        controllers: v["controllers"].as_str().unwrap_or_default().to_string(),
+    })
+}
 
-    let state_path = agent_state_path();
-    let mut saved = std::fs::read(&state_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .map(|v| AgentState {
-            node_id: v["nodeId"].as_str().unwrap_or_default().to_string(),
-            agent_key: v["agentKey"].as_str().map(str::to_string),
-            controller_key: v["controllerKey"].as_str().map(str::to_string),
-            channel_secret: v["channelSecret"].as_str().map(str::to_string),
-        })
-        .unwrap_or_default();
+/// Load (or create) this machine's agent state, pinning `controller_key` if given.
+fn load_agent_state(path: &std::path::Path, controller_key: Option<String>) -> AgentState {
+    let mut saved = read_agent_state(path).unwrap_or_default();
     // The join command's key wins over a saved one: running a new join command means a new controller.
     if let Some(k) = controller_key.filter(|k| hex32(k).is_some()) {
         if saved.controller_key.as_deref() != Some(k.as_str()) {
@@ -247,14 +246,171 @@ async fn run_remote_agent(
     if saved.controller_key.is_some() && saved.channel_secret.is_none() {
         saved.channel_secret = Some(hex::encode(seal::random32()));
     }
-    save_agent_state(&state_path, &saved);
-    let mut secrets_version: Option<String> = None;
     if saved.node_id.is_empty() {
         // Hostname plus a random suffix, so two boxes called `ubuntu` stay separate machines.
         let base = LocalNodeAdapter::new(7420).node_id().to_string();
         saved.node_id = format!("{base}-{:06x}", rand::random::<u32>() & 0xff_ffff);
-        save_agent_state(&state_path, &saved);
     }
+    save_agent_state(path, &saved);
+    saved
+}
+
+/// The code shown in the installer and next to Allow on the dashboard.
+fn pair_code_for(st: &AgentState) -> Option<String> {
+    let ck = st.controller_key.as_deref().and_then(hex32)?;
+    let cs = st.channel_secret.as_deref().and_then(hex32)?;
+    Some(seal::pair_code(&ck, &seal::public(&cs)))
+}
+
+/// Ask the home network for Rackdeck dashboards: (url, key hex, name). Blocking, takes `wait`.
+fn find_dashboards(wait: std::time::Duration) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else { return out };
+    let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let port: u16 = std::env::var("RACKDECK_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(7420);
+    // 255.255.255.255 doesn't reach every interface (or this machine, on macOS), so also try the
+    // primary network's own broadcast address.
+    // ponytail: assumes a /24 home network; read real netmasks if people report misses on bigger ones.
+    let mut targets = vec![std::net::Ipv4Addr::BROADCAST];
+    if let Some(std::net::IpAddr::V4(ip)) = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("1.1.1.1:80").map(|_| s))
+        .and_then(|s| s.local_addr())
+        .ok()
+        .map(|a| a.ip())
+    {
+        let [a, b, c, _] = ip.octets();
+        targets.push(std::net::Ipv4Addr::new(a, b, c, 255));
+    }
+    let end = std::time::Instant::now() + wait;
+    let mut next_send = std::time::Instant::now();
+    let mut buf = [0u8; 1024];
+    while std::time::Instant::now() < end {
+        if std::time::Instant::now() >= next_send {
+            for dst in &targets {
+                let _ = sock.send_to(seal::FIND_MSG, (*dst, port));
+            }
+            next_send += std::time::Duration::from_millis(700);
+        }
+        let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&buf[..n]) else { continue };
+        if let (Some(k), Some(name), Some(port)) = (v["key"].as_str(), v["name"].as_str(), v["port"].as_u64()) {
+            if hex32(k).is_some() && !out.iter().any(|(_, ok, _)| ok == k) {
+                out.push((format!("http://{}:{port}", from.ip()), k.to_string(), name.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Answer `find_dashboards` broadcasts from machines on the home network. Private addresses only,
+/// so a dashboard on a public IP can't be used to bounce traffic at someone.
+fn spawn_find_responder(port: u16, name: String, key_hex: String) {
+    tokio::spawn(async move {
+        let sock = match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("home-network discovery is off (UDP {port}: {e})");
+                return;
+            }
+        };
+        let reply = serde_json::json!({ "name": name, "port": port, "key": key_hex }).to_string();
+        let mut buf = [0u8; 64];
+        loop {
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else { continue };
+            let local = match from.ip() {
+                std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+                std::net::IpAddr::V6(_) => false,
+            };
+            if local && &buf[..n] == seal::FIND_MSG {
+                let _ = sock.send_to(reply.as_bytes(), from).await;
+            }
+        }
+    });
+}
+
+/// `rackdeck doctor`: plain answers for "why does the dashboard show this machine offline?"
+async fn doctor() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates: Vec<std::path::PathBuf> = [
+        std::env::var("RACKDECK_AGENT_STATE").ok().map(Into::into),
+        Some(std::path::Path::new(&home).join(".config/rackdeck/agent.json")),
+        Some("/var/lib/rackdeck/agent.json".into()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let path = candidates.iter().find(|p| p.exists());
+    let Some(path) = path else {
+        println!("This computer hasn't joined a dashboard yet.");
+        println!("Run the install command here: curl -fsSL https://get.rackdeck.dev | sh");
+        return;
+    };
+    let Some(st) = read_agent_state(path) else {
+        println!("Can't read {}. Run it with sudo: sudo rackdeck doctor", path.display());
+        return;
+    };
+
+    let (running, restart) = if cfg!(target_os = "macos") {
+        let ok = std::process::Command::new("launchctl").args(["list", "dev.rackdeck.agent"]).output().is_ok_and(|o| o.status.success());
+        (ok, "launchctl kickstart -k gui/$(id -u)/dev.rackdeck.agent")
+    } else {
+        let ok = std::process::Command::new("systemctl").args(["is-active", "--quiet", "rackdeck-agent"]).status().is_ok_and(|s| s.success());
+        (ok, "sudo systemctl restart rackdeck-agent")
+    };
+    if running {
+        println!("✓ The Rackdeck agent is running.");
+    } else {
+        println!("✗ The Rackdeck agent isn't running. Start it: {restart}");
+    }
+
+    let hosts: Vec<String> = st.controllers.split(',').map(|h| h.trim().trim_start_matches("http://").to_string()).filter(|h| !h.is_empty()).collect();
+    let mut reached = None;
+    for h in &hosts {
+        let Ok(Ok(mut s)) = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::TcpStream::connect(h)).await else { continue };
+        let _ = s.write_all(format!("GET /api/v1/health HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n").as_bytes()).await;
+        let mut body = String::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), s.read_to_string(&mut body)).await;
+        if body.contains("\"rackdeck\"") {
+            reached = Some(h.clone());
+            break;
+        }
+    }
+    match &reached {
+        Some(h) => println!("✓ This computer can reach the dashboard at {h}."),
+        None => {
+            println!("✗ Can't reach the dashboard at {}.", if hosts.is_empty() { "its saved address".into() } else { hosts.join(" or ") });
+            let found = tokio::task::spawn_blocking(|| find_dashboards(std::time::Duration::from_secs(2))).await.unwrap_or_default();
+            match found.iter().find(|(_, k, _)| Some(k.as_str()) == st.controller_key.as_deref()) {
+                Some((url, _, name)) => println!("  Found it on this network at {url} ({name}). Its address changed; the agent switches to it on its own within a minute."),
+                None if !found.is_empty() => println!("  Found a different dashboard ({}), not the one this computer joined. To move it, use + Add machine on that dashboard.", found[0].2),
+                None => println!("  Nothing answered on this network either. Check the dashboard computer is on and awake, and that both computers are on the same Wi-Fi or Tailscale."),
+            }
+        }
+    }
+    if running && reached.is_some() {
+        if let Some(code) = pair_code_for(&st) {
+            println!("\nBoth look fine. If the dashboard still shows it offline, check for an Allow request there with code {code}.");
+        }
+        let log = if cfg!(target_os = "macos") { "tail -n 30 ~/Library/Logs/rackdeck-agent.log" } else { "journalctl -u rackdeck-agent -n 30" };
+        println!("The agent's log may say more: {log}");
+    }
+}
+
+async fn run_remote_agent(
+    controller: String,
+    initial_token: String,
+    controller_key: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let state_path = agent_state_path();
+    let mut saved = load_agent_state(&state_path, controller_key);
+    saved.controllers = controller.clone();
+    save_agent_state(&state_path, &saved);
+    let mut secrets_version: Option<String> = None;
     let local = Arc::new(LocalNodeAdapter::new(7420).with_node_id(saved.node_id.clone()));
     // --controller may list several addresses (Tailscale, LAN). Stick with one until it stops answering.
     let hosts: Vec<String> = controller
@@ -270,7 +426,11 @@ async fn run_remote_agent(
     let mut host_idx = 0usize;
 
     // A saved key survives restarts; the one-time join token is only a fallback for first contact.
-    let mut join_token = Some(initial_token);
+    // No token at all means we found the dashboard on the home network and wait for Allow.
+    let mut join_token = Some(initial_token).filter(|t| !t.is_empty());
+    let mut hosts = hosts;
+    let mut fails_in_row = 0usize;
+    let mut last_find = std::time::Instant::now();
     let mut bearer = match saved.agent_key.clone() {
         Some(k) => k,
         None => join_token.take().unwrap_or_default(),
@@ -329,9 +489,14 @@ async fn run_remote_agent(
         .await;
 
         let mut stream = match connect_res {
-            Ok(Ok(s)) => s,
+            Ok(Ok(s)) => {
+                fails_in_row = 0;
+                s
+            }
             Ok(Err(e)) => {
                 host_idx = (host_idx + 1) % hosts.len();
+                fails_in_row += 1;
+                rediscover(&mut hosts, &mut host_idx, &mut last_find, fails_in_row, &saved, &state_path).await;
                 let msg = format!("cannot connect to {host_port}: {e}");
                 if last_err.as_deref() != Some(&msg) {
                     tracing::warn!("{msg} (check controller IP/port or try LAN IP if inside WSL)");
@@ -341,6 +506,8 @@ async fn run_remote_agent(
             }
             Err(_) => {
                 host_idx = (host_idx + 1) % hosts.len();
+                fails_in_row += 1;
+                rediscover(&mut hosts, &mut host_idx, &mut last_find, fails_in_row, &saved, &state_path).await;
                 let msg = format!("timed out connecting to {host_port} after 5s");
                 if last_err.as_deref() != Some(&msg) {
                     tracing::warn!("{msg} (Tailscale/firewall may be blocking route — try controller LAN IP)");
@@ -404,7 +571,14 @@ async fn run_remote_agent(
                     continue;
                 }
             }
-            let msg = format!("controller {host_port} rejected checkin: {status_line} ({body})");
+            let msg = if status_line.contains(" 403") && body.contains("\"pending\"") {
+                format!(
+                    "waiting for you to click Allow on the dashboard (code {})",
+                    pair_code_for(&saved).unwrap_or_default()
+                )
+            } else {
+                format!("controller {host_port} rejected checkin: {status_line} ({body})")
+            };
             if last_err.as_deref() != Some(&msg) {
                 tracing::warn!("{msg}");
                 last_err = Some(msg);
@@ -413,7 +587,7 @@ async fn run_remote_agent(
         }
 
         if last_err.is_some() {
-            tracing::info!("reconnected to controller {controller}");
+            tracing::info!("reconnected to the dashboard at {host_port}");
             last_err = None;
         }
 
@@ -493,6 +667,34 @@ async fn run_remote_agent(
     }
 }
 
+/// When no saved address answers (say the dashboard got a new IP from the router), look for it on
+/// the home network. Only a dashboard with the pinned key counts. At most every 30s.
+async fn rediscover(
+    hosts: &mut Vec<String>,
+    host_idx: &mut usize,
+    last_find: &mut std::time::Instant,
+    fails_in_row: usize,
+    saved: &AgentState,
+    state_path: &std::path::Path,
+) {
+    if fails_in_row < hosts.len() || last_find.elapsed() < std::time::Duration::from_secs(30) {
+        return;
+    }
+    *last_find = std::time::Instant::now();
+    let Some(pinned) = saved.controller_key.clone() else { return };
+    let found = tokio::task::spawn_blocking(|| find_dashboards(std::time::Duration::from_secs(2))).await.unwrap_or_default();
+    let Some((url, _, _)) = found.into_iter().find(|(_, k, _)| *k == pinned) else { return };
+    let host = url.trim_start_matches("http://").to_string();
+    if !hosts.contains(&host) {
+        tracing::info!("found the dashboard at its new address {host}");
+        hosts.insert(0, host);
+        let mut st = read_agent_state(state_path).unwrap_or_default();
+        st.controllers = hosts.join(",");
+        save_agent_state(state_path, &st);
+    }
+    *host_idx = hosts.iter().position(|h| *h == url.trim_start_matches("http://")).unwrap_or(0);
+}
+
 async fn run_agent_command(local: &LocalNodeAdapter, op: AgentOp) -> Result<AgentOutput, String> {
     match op {
         AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|_| AgentOutput::Done),
@@ -512,7 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h" | "help")) {
         println!(
-            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n  rackdeck update                                       Install the latest release over this binary\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
+            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n  rackdeck update                                       Install the latest release over this binary\n  rackdeck doctor                                       Explain why this machine shows as offline\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -531,6 +733,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("doctor") {
+        doctor().await;
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("find") {
+        // For the installer: one dashboard per line, "url key name".
+        for (url, key, name) in find_dashboards(std::time::Duration::from_secs(2)) {
+            println!("{url} {key} {name}");
+        }
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("pair-code") {
+        // For the installer: set up this machine's keys for the found dashboard and print the code.
+        let Some(key) = args.get(2).filter(|k| hex32(k).is_some()) else {
+            eprintln!("Usage: rackdeck pair-code <dashboard-key>");
+            std::process::exit(2);
+        };
+        let st = load_agent_state(&agent_state_path(), Some(key.clone()));
+        println!("{}", pair_code_for(&st).unwrap_or_default());
         return Ok(());
     }
     if args.get(1).map(|s| s.as_str()) == Some("agent") {
@@ -555,8 +778,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => i += 1,
             }
         }
-        if controller.is_empty() || token.is_empty() {
-            eprintln!("Usage: rackdeck agent --controller <http://host:7420> --token <join-token>");
+        let has_key = controller_key.is_some() || read_agent_state(&agent_state_path()).is_some_and(|s| s.controller_key.is_some());
+        if controller.is_empty() || (token.is_empty() && !has_key) {
+            eprintln!("Usage: rackdeck agent --controller <http://host:7420> (--token <join-token> | --key <dashboard-key>)");
             std::process::exit(2);
         }
         return run_remote_agent(controller, token, controller_key).await;
@@ -580,6 +804,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_id = state.local_node_id.clone();
 
     let password_set = state.owner_password.is_some();
+    if password_set {
+        let name = state.fleet_repo.get_node(&node_id).await.ok().flatten().map(|n| n.name).unwrap_or_else(|| node_id.clone());
+        let key = hex::encode(seal::public(&seal::controller_secret(&state.signing_key.to_bytes())));
+        spawn_find_responder(port, name, key);
+    }
     let app = build_router(state);
 
     // Without a password anyone who can reach the port is the owner (terminal included),

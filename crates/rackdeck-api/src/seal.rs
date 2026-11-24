@@ -94,6 +94,17 @@ pub fn seal_response(key: &[u8; 32], plain: &[u8]) -> Vec<u8> {
     seal_with(key, RES_NONCE, plain)
 }
 
+/// Six digits both sides show while a machine asks to join on the home network. Covers both keys,
+/// so a machine in the middle would make the codes differ.
+pub fn pair_code(controller_pub: &[u8; 32], agent_pub: &[u8; 32]) -> String {
+    let h = Sha256::new().chain_update(b"rackdeck pair code").chain_update(controller_pub).chain_update(agent_pub).finalize();
+    let n = u32::from_be_bytes([0, h[0], h[1], h[2]]) % 1_000_000;
+    format!("{:03} {:03}", n / 1000, n % 1000)
+}
+
+/// Home-network discovery: a new machine broadcasts this on UDP and dashboards answer with their name and key.
+pub const FIND_MSG: &[u8] = b"rackdeck-find v1";
+
 /// Secrets at rest: random nonce, key derived from the controller's signing key. Output is hex.
 pub fn encrypt_at_rest(signing_key: &[u8; 32], plain: &str) -> String {
     let key = Sha256::new().chain_update(b"rackdeck secrets at rest").chain_update(signing_key).finalize().into();
@@ -214,6 +225,10 @@ mod tests {
         assert_eq!(decrypt_at_rest(&k, &encrypt_at_rest(&k, "s3cr'et")).unwrap(), "s3cr'et");
         assert!(decrypt_at_rest(&random32(), &encrypt_at_rest(&k, "x")).is_none());
         assert!(valid_secret_name("CLAUDE_CODE_OAUTH_TOKEN"));
+        let (c, a) = (public(&random32()), public(&random32()));
+        assert_eq!(pair_code(&c, &a), pair_code(&c, &a));
+        assert_eq!(pair_code(&c, &a).len(), 7);
+        assert_ne!(pair_code(&c, &a), pair_code(&a, &c));
         for bad in ["PATH", "LD_PRELOAD", "DYLD_X", "lower", "1ABC", "A-B", ""] {
             assert!(!valid_secret_name(bad), "{bad}");
         }

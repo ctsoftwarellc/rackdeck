@@ -2,7 +2,7 @@
 
 One dashboard for the computers you own: a Mac, a GPU box, a home server, a VPS.
 
-Rackdeck is a single file of about 6 MB with the web dashboard built in. It used about 13 MB of RAM on an M-series MacBook in our testing. It doesn't need Docker, Postgres or Redis; its data lives in one SQLite file. It's open source under Apache-2.0, needs no account, and sends no analytics.
+Rackdeck is a single file of about 6 MB with the web dashboard built in. It used about 13 MB of RAM on an M-series MacBook in our testing. Its data is one SQLite file, and nothing else has to be running. It's open source under Apache-2.0, needs no account, and sends no analytics.
 
 **[Try the live demo](https://rackdeck.dev/demo/)** · [Install](#install) · [Add a machine](#add-a-machine) · [Features](#what-you-can-do) · [Security](docs/security.md)
 
@@ -30,7 +30,7 @@ curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='choose-a-strong-passwor
 
 The machine shows up within a few seconds. The command works once and expires after 15 minutes. The installer tries each of the dashboard's addresses (Tailscale and your home network) and uses the one that answers, sets the agent up as a service, and tells you plainly if something is wrong, such as an expired command.
 
-Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and signed both ways. On Windows, use WSL with systemd turned on; the installer explains how if it's off.
+Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and authenticated both ways. On Windows, use WSL with systemd turned on; the installer explains how if it's off.
 
 ## What you can do
 
@@ -41,7 +41,7 @@ Joined machines connect out to the dashboard, so you don't open any ports on the
 - **Let AI coding tools help.** The built-in MCP server lets Claude Code, Codex or Cursor read status or deploy apps with a token you scope and can revoke. Tokens never get a terminal.
 - **Update everything with one button.** When a new version is out, **Update all** updates each joined machine and then the dashboard, without reinstalling.
 - **Find your tailnet.** If Tailscale is installed, Rackdeck lists your other devices. It only reads; it never signs into your Tailscale account.
-- **Check the audit log** for joins, updates, app actions, secret changes and AI tool calls.
+- **Check the audit log** for joins, updates, app actions, secret changes, and apps that AI tools deploy or restart.
 
 ## Platforms
 

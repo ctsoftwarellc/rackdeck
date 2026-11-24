@@ -1280,7 +1280,21 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState, sid: Option<String>) {
         }
     });
 
-    while let Some(Ok(msg)) = ws_rx.next().await {
+    // Logging out or an expired session closes the socket, which also stops live logs and stats.
+    let mut session_check = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        let msg = tokio::select! {
+            m = ws_rx.next() => match m {
+                Some(Ok(m)) => m,
+                _ => break,
+            },
+            _ = session_check.tick() => {
+                if session_still_valid(&state, sid.as_deref()).await { continue } else { break }
+            }
+        };
+        if !session_still_valid(&state, sid.as_deref()).await {
+            break;
+        }
         if let Message::Text(txt) = msg {
             if let Ok(cmd) = serde_json::from_str::<ClientWsCommand>(&txt) {
                 match cmd {

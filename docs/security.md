@@ -13,7 +13,7 @@ This page explains how Rackdeck's parts connect, what each connection protects, 
 ## Who connects to whom
 
 ```
- browser ──HTTPS or LAN──▶ dashboard :7420 ◀──check-ins (encrypted)── agent
+ browser ──HTTP on your LAN, or HTTPS in front──▶ dashboard :7420 ◀──check-ins (encrypted)── agent
                                  │
                                  └──outbound WebSocket (wss://)──▶ relay ◀── browser (public address)
 ```
@@ -25,7 +25,7 @@ This page explains how Rackdeck's parts connect, what each connection protects, 
 ## Dashboard access
 
 - **No password, no network.** Without `RACKDECK_PASSWORD`, the dashboard listens on `127.0.0.1` only, so nothing else on your network can reach it. Setting a password opens it to your network.
-- **Sessions.** Logging in sets an `HttpOnly; SameSite=Lax` cookie. Long-lived web sockets recheck the session before privileged actions, so logging out cuts off an open terminal.
+- **Sessions.** Logging in sets an `HttpOnly; SameSite=Lax` cookie. The dashboard's live connection rechecks the session on every message and every 5 seconds, and closes when you log out. That stops open terminals, log streams and live stats.
 - **Terminal.** Only the logged-in owner can open the terminal, and only on the dashboard's own machine. Each session is written to the audit log (which machine, when). Command text is not stored.
 - **Connect needs a password.** Tunnel traffic reaches the dashboard from the machine itself, so the dashboard refuses to turn Connect on without a password.
 
@@ -54,15 +54,15 @@ Check-ins travel over plain HTTP on your LAN or tailnet, so Rackdeck encrypts an
 - You set a secret once in the dashboard and pick which machines get it.
 - **At rest:** values are encrypted with ChaCha20-Poly1305 under a key derived from `rackdeck.key`. The database holds no plain text. Someone with both the database and `rackdeck.key` can decrypt them, so protect the data directory.
 - **In transit:** values only travel inside encrypted check-ins, and only when a machine's copy is out of date.
-- **On each machine:** they are written to `~/.config/rackdeck/secrets.env`, readable only by you (0600). On Linux the agent runs as root and sets the file's owner to the user who installed it. The installer adds a line to `~/.bashrc` and `~/.zshrc` so new shells load the file.
+- **On each machine:** they are written to `~/.config/rackdeck/secrets.env`, readable only by you (0600). On Linux the agent runs as root and sets the file's owner to the user who installed it. So new shells load the file, the installer adds one line to `~/.bashrc` and `~/.zshrc` when those files exist. On macOS it creates `~/.zshrc` if it's missing. If you use another shell, add `. ~/.config/rackdeck/secrets.env` to its startup file.
 - The API never returns values, only names and machines. The audit log records the name, never the value.
-- Names that change which programs run are refused: `PATH`, `HOME`, `SHELL`, `IFS`, `ENV`, `BASH_ENV`, `PROMPT_COMMAND`, and anything starting with `LD_` or `DYLD_`.
+- Names that change which programs run are refused: `PATH`, `HOME`, `SHELL`, `USER`, `IFS`, `ENV`, `BASH_ENV`, `PROMPT_COMMAND`, and anything starting with `LD_` or `DYLD_`.
 
 ## AI tools (MCP)
 
 - The dashboard has a built-in MCP server at `/mcp`. Claude Code, Codex and Cursor connect with a token.
 - Tokens are shown once and stored only as SHA-256 hashes. Each token can read, or read and deploy, and can be limited to certain machines. Tokens never get a terminal, network settings or token management.
-- Every call is in the audit log, and tokens can be revoked at any time.
+- App changes made with a token (start, stop, restart, deploy) are written to the audit log. Read-only calls, like checking machine health or reading logs, are not. Tokens can be revoked at any time.
 
 ## Updates
 
@@ -71,7 +71,7 @@ Check-ins travel over plain HTTP on your LAN or tailnet, so Rackdeck encrypts an
 
 ## The relay (Connect)
 
-- The dashboard opens an outbound `wss://` connection to the relay and proves who it is by signing a fresh random challenge with its Ed25519 key.
+- The dashboard dials the relay address in `RACKDECK_RELAY_URL` and proves who it is by signing a fresh random challenge with its Ed25519 key. A relay on the internet should use a `wss://` address so the tunnel is encrypted.
 - A public name like `you.rackdev.app` belongs to the first key that claims it. Another key can't take it over.
 - On a relay that requires a subscription, a tunnel is only allowed while the account is active. Stripe webhooks must carry a valid signature no older than 5 minutes.
 - If the relay goes away, your dashboard, LAN and Tailscale access, apps and data keep working. Nothing depends on it.

@@ -1,34 +1,63 @@
 # Rackdeck
 
-**Lightweight Rust server management for mixed fleets — cloud VPS, home NVIDIA GPU rigs, and Apple Silicon Macs in one clean dashboard.**
+**All your machines in one clean, secure dashboard — home PCs, NVIDIA GPU rigs, Apple Silicon Macs, and cloud VPSs.**
 
-Built as a single Rust binary (`rackdeck`) with an embedded React UI and bundled SQLite (WAL). Works 100% free on your home LAN or existing Tailscale/WireGuard network with **no account required** and **zero product telemetry**.
+Built as a single Rust binary (`rackdeck`, ~4.7 MB) with an embedded React UI and bundled SQLite (WAL). Works 100% free on your home LAN or existing Tailscale/WireGuard network with **no account required** and **zero product telemetry**.
+
+[Quickstart](#quickstart-account-free) · **[Set up with an AI agent](#set-up-with-an-ai-agent)** · [What v0.1 manages](#what-v01-manages) · [Support matrix](#support-matrix-v01) · [Security](#permissions-privacy--relay-boundaries)
 
 ---
 
 ## Quickstart (Account-Free)
 
-### Run locally or on a Linux VPS
+### Install prebuilt binary (Linux `x86_64` & macOS Apple Silicon)
 ```bash
-# Build from source (requires Rust + Bun)
-cd ui && bun install && bun run build && cd ..
-cargo build --release -p rackdeck -p rackdeck-relay
+curl -fsSL https://get.rackdeck.dev | sh
 
 # Start all-in-one control plane + local node (http://127.0.0.1:7420)
-./target/release/rackdeck
+RACKDECK_PASSWORD="choose-a-strong-password" rackdeck
 ```
 
-For public/internet-facing deployments, set an owner password to enable HttpOnly session login:
+### Or build from source (requires Rust + Bun)
 ```bash
+cd ui && bun install && bun run build && cd ..
+cargo build --release -p rackdeck -p rackdeck-relay
 RACKDECK_PASSWORD="choose-a-strong-password" ./target/release/rackdeck
 ```
 
-### Join a second machine (VPS, 5090 rig, or Mac)
+### Join a second machine (VPS, GPU rig, or Mac)
 1. Open the dashboard → click **`+ Add machine`**.
-2. Copy the generated 15-minute join command (or scan the QR code from the companion app).
+2. Copy the generated 15-minute join command (or scan the QR code from your phone).
 3. Run it on your remote machine:
 ```bash
-./target/release/rackdeck agent --controller http://<controller-ip>:7420 --token <rd_join_...>
+rackdeck agent --controller http://<controller-ip>:7420 --token <rd_join_...>
+```
+
+---
+
+## Set up with an AI agent
+
+Using **Claude Code, Codex, Cursor, OpenCode, or Antigravity**? Copy the prompt below and paste it into your agent — it will install Rackdeck on your machine, set a strong password, wire up a background service so it survives reboots, and verify everything is running cleanly.
+
+```text
+Install and set up Rackdeck (https://github.com/ctsoftwarellc/rackdeck) on this machine so I can manage my servers, containers, and local GPUs/models from one dashboard.
+
+Please do the following step by step:
+1. Check this machine's OS, CPU arch, whether Docker is installed, whether nvidia-smi or Apple Silicon is present, and whether Tailscale is connected (`tailscale ip -4`).
+2. Install the Rackdeck binary using:
+   curl -fsSL https://get.rackdeck.dev | sh
+   (If my OS/arch isn't in prebuilt releases yet, clone https://github.com/ctsoftwarellc/rackdeck and build from source with bun + cargo.)
+3. Create a persistent data directory (`~/.local/share/rackdeck` on macOS/user Linux or `/var/lib/rackdeck` for system-wide Linux) and generate a strong random password for `RACKDECK_PASSWORD` (ask me if I prefer my own).
+4. Set up Rackdeck as a background service that starts on boot:
+   - On Linux: create and enable a systemd service running `/usr/local/bin/rackdeck` with `RACKDECK_PORT=7420`, `RACKDECK_DB=<data-dir>/rackdeck.db`, and `RACKDECK_PASSWORD` in an env file with `0600` permissions.
+   - On macOS: create and load a LaunchAgent plist (`~/Library/LaunchAgents/dev.rackdeck.plist`) with `RACKDECK_PORT=7420`, `RACKDECK_DB=<data-dir>/rackdeck.db`, and `RACKDECK_PASSWORD`.
+   - Do NOT open any router ports or expose port 7420 publicly to the internet unless I explicitly ask.
+5. Verify it is healthy with `curl -sf http://127.0.0.1:7420/api/v1/health`.
+6. Give me:
+   - The local URL (`http://127.0.0.1:7420`) and Tailscale URL (if Tailscale is running)
+   - My login password and where the env/service file lives
+   - The exact one-liner to add my next machine (`rackdeck agent --controller ... --token ...`)
+   - Ask if I also want to link a second machine or set up a read-only MCP token.
 ```
 
 ---

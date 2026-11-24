@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Rackdeck — All your machines in one clean, secure dashboard</title>
-<meta name="description" content="Manage your home PC, GPU rig, Mac, and cloud VPS from one fast 4.8 MB open-source dashboard. Free forever on your home network or Tailscale; optional $9/mo secure remote access." />
+<meta name="description" content="Manage your home PC, GPU rig, Mac, and cloud VPS from one fast 4.7 MB open-source dashboard. Free forever on your home network or Tailscale." />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Rackdeck" />
 <meta property="og:url" content="https://rackdeck.dev/" />
@@ -927,11 +927,11 @@
         <div class="hero-top">
           <div class="hero-pill">
             <span class="dot"></span>
-            <span>Open-source · Free on your home network · Single 4.8 MB app</span>
+            <span>Open-source · Free on your home network &amp; Tailscale · 4.7 MB binary</span>
           </div>
           <h1 class="hero-title">All your machines.<br />One clean, secure dashboard.</h1>
           <p class="hero-sub">
-            Keep tabs on your home PC, GPU rig, Mac, and cloud VPS in one fast place. Check temps and memory, run Docker apps, view live logs, and reach everything safely from your phone or laptop — without opening router ports.
+            Keep tabs on your home PC, GPU rig, Mac, and cloud VPS in one fast place. Check temps and memory, run Docker apps, view live logs, and reach everything over home Wi-Fi or Tailscale — without opening router ports.
           </p>
           <div class="hero-cta">
             <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
@@ -942,6 +942,9 @@
               <code>curl -fsSL https://get.rackdeck.dev | sh</code>
               <span class="cmd-copy">Copy</span>
             </button>
+            <a class="btn btn-ghost btn-lg" href="https://github.com/ctsoftwarellc/rackdeck#set-up-with-an-ai-agent" target="_blank" rel="noopener noreferrer">
+              Let an AI agent set it up →
+            </a>
           </div>
           <div class="hero-reassure">
             <span>
@@ -966,12 +969,12 @@
               <div class="win-dots" aria-hidden="true"><i></i><i></i><i></i></div>
               <div class="bar-addr">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-                <span>https://caleb.rackdev.app</span>
+                <span>http://home-rtx-5090.ts.net:7420</span>
               </div>
             </div>
             <div class="bar-status">
               <span class="dot"></span>
-              <span>3 machines online · No open router ports</span>
+              <span>3 machines online · Private Tailnet</span>
             </div>
           </div>
 
@@ -1000,8 +1003,8 @@
                 <span class="machine-meta">Debian · 2 vCPU · 2 GB</span>
               </button>
               <div class="side-hint">
-                <span>Remote link</span>
-                <strong>Encrypted</strong>
+                <span>Network</span>
+                <strong>Tailscale + LAN</strong>
               </div>
             </aside>
             <div class="preview-main" id="preview-main"></div>
@@ -1087,12 +1090,12 @@
           <div class="card bento-card">
             <div class="bento-top">
               <h3>Reach home safely without router ports</h3>
-              <span class="bento-pill">Zero port forwarding</span>
+              <span class="bento-pill">LAN &amp; Tailscale ready</span>
             </div>
-            <p>Use Rackdeck free on home Wi-Fi or over Tailscale. Want a clean HTTPS address that works from any phone or laptop with zero network setup? Flip on optional Connect for <code>yourname.rackdev.app</code>.</p>
+            <p>Works out of the box on home Wi-Fi, Tailscale, WireGuard, or your own self-hosted <code>rackdeck-relay</code>. Don't want to run a VPN or relay yourself? Optional managed Connect (<code>*.rackdev.app</code>) is coming soon.</p>
             <div class="bento-mini">
-              <span><strong>https://caleb.rackdev.app</strong> · Auto HTTPS</span>
-              <span class="ok">Outbound tunnel</span>
+              <span><strong>Tailscale &amp; LAN mDNS</strong> · zero router config</span>
+              <span class="ok">Available now</span>
             </div>
           </div>
 
@@ -1103,7 +1106,7 @@
             </div>
             <p>Rackdeck automatically spots your local and Tailscale machines. Linking another PC takes one pasteable join command, and pairing your phone takes a quick 60-second QR scan.</p>
             <div class="bento-mini">
-              <span><strong>rackdeck agent join</strong> · 15m one-time token</span>
+              <span><strong>rackdeck agent --controller …</strong> · 15m token</span>
               <span class="ok">Verified key</span>
             </div>
           </div>
@@ -1146,7 +1149,7 @@
           <div class="card step-card">
             <div class="step-num">3</div>
             <h3>Link your other machines</h3>
-            <p>Paste a single join command on your GPU rig, Mac, or VPS — or toggle Connect to reach everything securely from anywhere.</p>
+            <p>Paste a single join command on your GPU rig, Mac, or VPS over LAN or Tailscale — everything shows up in one dashboard right away.</p>
           </div>
         </div>
 
@@ -1157,10 +1160,10 @@
           </div>
           <div class="term-body">
             <div class="term-line"><span class="p">$</span>curl -fsSL https://get.rackdeck.dev | sh</div>
-            <div class="term-line dim">  installed /usr/local/bin/rackdeck (4.8 MB · v0.1.0)</div>
-            <div class="term-line" style="margin-top:8px"><span class="p">$</span>RACKDECK_PASSWORD=your-password rackdeck serve</div>
-            <div class="term-line ok">  ✓ Dashboard ready at http://127.0.0.1:7337 (found 2 Tailscale peers)</div>
-            <div class="term-line" style="margin-top:8px"><span class="p">$</span>rackdeck agent join --hub https://caleb.rackdev.app --token rdj_9f2a…</div>
+            <div class="term-line dim">  installed /usr/local/bin/rackdeck (4.7 MB · v0.1.0)</div>
+            <div class="term-line" style="margin-top:8px"><span class="p">$</span>RACKDECK_PASSWORD=your-password rackdeck</div>
+            <div class="term-line ok">  ✓ Dashboard ready at http://127.0.0.1:7420 (found 2 Tailscale peers)</div>
+            <div class="term-line" style="margin-top:8px"><span class="p">$</span>rackdeck agent --controller http://100.94.12.2:7420 --token rdj_9f2a…</div>
             <div class="term-line ok">  ✓ home-rtx-5090 linked (RTX 5090 · 32 GB VRAM · ninfer 173 tok/s)</div>
           </div>
         </div>
@@ -1177,61 +1180,61 @@
         </div>
 
         <div class="pricing-grid">
-          <div class="card price-card">
+          <div class="card price-card featured">
             <div class="price-head">
               <span class="price-name">Self-Hosted</span>
-              <span class="price-tag">Apache-2.0</span>
+              <span class="price-tag">Available now</span>
             </div>
             <div class="price-num">
               <strong>$0</strong>
               <span>/ forever</span>
             </div>
-            <p class="price-desc">Run on your own PC, Mac, or VPS over home Wi-Fi, Tailscale, or WireGuard.</p>
+            <p class="price-desc">Open-source (Apache-2.0). Run on your own PC, Mac, or VPS over home Wi-Fi, Tailscale, or WireGuard today.</p>
             <ul class="price-list">
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Unlimited machines &amp; Docker apps</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>NVIDIA GPU &amp; Apple Silicon live stats</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Live logs, browser shell, QR pairing &amp; MCP</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hostable relay included if you want it</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hostable <code>rackdeck-relay</code> included</span></li>
             </ul>
-            <a class="btn btn-ghost" href="#setup">Get started free</a>
+            <a class="btn btn-primary" href="#setup">Install free now</a>
           </div>
 
-          <div class="card price-card featured">
+          <div class="card price-card">
             <div class="price-head">
               <span class="price-name">Rackdeck Connect</span>
-              <span class="price-tag">Easiest remote access</span>
+              <span class="price-tag">Coming soon</span>
             </div>
             <div class="price-num">
               <strong>$9</strong>
-              <span>/ month</span>
+              <span>/ month · planned</span>
             </div>
-            <p class="price-desc">Secure HTTPS access from your phone or laptop anywhere — zero router setup.</p>
+            <p class="price-desc">Managed remote bridge so you can reach home over HTTPS from any phone or laptop — zero VPN or router setup.</p>
             <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Your own <code>yourname.rackdev.app</code> HTTPS link</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Dedicated <code>yourname.rackdev.app</code> HTTPS link</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Works behind any home router or CGNAT</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Cryptographic key auth &amp; isolated domain</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Turn on or cancel in one click inside the app</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Optional — self-host <code>rackdeck-relay</code> free anytime</span></li>
             </ul>
-            <a class="btn btn-primary" href="https://github.com/ctsoftwarellc/rackdeck#rackdeck-connect" target="_blank" rel="noopener noreferrer">Turn on in Rackdeck</a>
+            <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Join early-access list</a>
           </div>
 
           <div class="card price-card">
             <div class="price-head">
               <span class="price-name">Rackdeck Cloud</span>
-              <span class="price-tag">Hosted hub</span>
+              <span class="price-tag">Planned</span>
             </div>
             <div class="price-num">
               <strong>$19</strong>
-              <span>/ month</span>
+              <span>/ month · planned</span>
             </div>
-            <p class="price-desc">We host the main control panel for you at <code>app.rackdeck.dev</code> with encrypted backups.</p>
+            <p class="price-desc">Hosted dashboard at <code>app.rackdeck.dev</code> with encrypted backups so you only run lightweight agents on your boxes.</p>
             <ul class="price-list">
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Everything in Rackdeck Connect included</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Automatic encrypted database backups</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Connect your own home PCs, Macs &amp; VPSs</span></li>
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Keep your own cloud bills — zero VPS markup</span></li>
             </ul>
-            <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Request early access</a>
+            <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Join early-access list</a>
           </div>
         </div>
 
@@ -1257,8 +1260,8 @@
             <p>Never. On home Wi-Fi or Tailscale, Rackdeck stays completely private on your network. If you use Rackdeck Connect, your machine makes a secure outbound connection so your router firewall stays closed.</p>
           </details>
           <details class="card faq-item" open>
-            <summary>Why are remote links on *.rackdev.app instead of rackdeck.dev?</summary>
-            <p>Security isolation. Keeping personal dashboards on a separate domain (<code>yourname.rackdev.app</code>) prevents browser cookies and sessions from ever crossing over with <code>rackdeck.dev</code>.</p>
+            <summary>Why will hosted Connect links use *.rackdev.app instead of rackdeck.dev?</summary>
+            <p>Security isolation. Keeping personal remote dashboards on a separate domain (<code>yourname.rackdev.app</code>) prevents browser cookies and sessions from ever crossing over with <code>rackdeck.dev</code>.</p>
           </details>
           <details class="card faq-item">
             <summary>Does it combine my Mac and NVIDIA GPU memory into one GPU?</summary>
@@ -1365,7 +1368,7 @@
       logs: [
         ["20:54:11", "OK", "ninfer ready: Qwen3.8-27B on RTX 5090 (21.4 GB VRAM · 173 tok/s)"],
         ["20:54:14", "OK", "GPU check: 64°C, 284W, fan 42% — thermals normal"],
-        ["20:54:19", "OK", "Secure remote link active (caleb.rackdev.app · 18ms)"],
+        ["20:54:19", "OK", "Tailscale mesh peer connected (100.94.12.8 · 18ms)"],
         ["20:54:25", "AUDIT", "Read-only MCP check from Claude Code: home-rtx-5090 healthy"]
       ]
     },

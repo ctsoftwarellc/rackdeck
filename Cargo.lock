@@ -747,7 +747,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rackdeck"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "ed25519-dalek",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-connect"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "bytes",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-discovery"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-node"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "rackdeck-core",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "rackdeck-core",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-relay"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "rackdeck-connect",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "rackdeck-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "rackdeck-core",

@@ -266,6 +266,15 @@ pub struct DeploySpec {
     pub container_port: Option<u16>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// More port maps, "host:container" or "host:container/udp".
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// "volume-name:/path/in/container", or "/host/folder:/path" (owner only).
+    #[serde(default)]
+    pub volumes: Vec<String>,
+    /// Give the container the machine's NVIDIA GPUs.
+    #[serde(default)]
+    pub gpu: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -105,6 +105,10 @@ impl FleetService {
             return Err(err);
         }
 
+        // A host folder mount reaches the machine's files, so only the owner may use one, not a token.
+        if !matches!(principal, Principal::Owner { .. }) && spec.volumes.iter().any(|v| v.starts_with('/')) {
+            return Err(crate::CoreError::Forbidden("only the owner can mount folders from the machine".into()));
+        }
         let res = if node_id == self.local_node_id {
             self.local_node.deploy_app(spec).await
         } else {

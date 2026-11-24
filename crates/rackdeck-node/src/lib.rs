@@ -108,6 +108,39 @@ async fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+/// `docker run` flags for a spec's extra ports, volumes and GPU. Rejects anything malformed.
+fn extra_run_args(spec: &DeploySpec) -> Result<Vec<String>, CoreError> {
+    let mut args: Vec<String> = Vec::new();
+    for p in &spec.ports {
+        let (map, proto) = p.split_once('/').unwrap_or((p.as_str(), "tcp"));
+        let ok = matches!(proto, "tcp" | "udp")
+            && map.split_once(':').is_some_and(|(h, c)| h.parse::<u16>().is_ok() && c.parse::<u16>().is_ok());
+        if !ok {
+            return Err(CoreError::InvalidInput(format!("bad port map `{p}`")));
+        }
+        args.push("-p".into());
+        args.push(p.clone());
+    }
+    for v in &spec.volumes {
+        let ok = v.split_once(':').is_some_and(|(src, dst)| {
+            dst.starts_with('/')
+                && !dst.contains(':')
+                && (src.starts_with('/')
+                    || (!src.is_empty() && src.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))))
+        });
+        if !ok {
+            return Err(CoreError::InvalidInput(format!("bad volume `{v}`")));
+        }
+        args.push("-v".into());
+        args.push(v.clone());
+    }
+    if spec.gpu {
+        args.push("--gpus".into());
+        args.push("all".into());
+    }
+    Ok(args)
+}
+
 fn detect_lan_ip() -> Option<String> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("1.1.1.1:80").ok()?;
@@ -464,6 +497,7 @@ impl NodeOps for LocalNodeAdapter {
             args.push("-p".into());
             args.push(format!("{hp}:{cp}"));
         }
+        args.extend(extra_run_args(&spec)?);
         for (k, v) in &spec.env {
             if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 args.push("-e".into());
@@ -471,6 +505,18 @@ impl NodeOps for LocalNodeAdapter {
             }
         }
         args.push(spec.image.clone());
+
+        // Pull first with a long timeout: AI images are several GB. `docker run` then starts quickly.
+        let pull = tokio::time::timeout(
+            std::time::Duration::from_secs(900),
+            Command::new("docker").args(["pull", &spec.image]).stdout(Stdio::null()).stderr(Stdio::piped()).output(),
+        )
+        .await
+        .map_err(|_| CoreError::Runtime("downloading the image took over 15 minutes".into()))?
+        .map_err(|e| CoreError::Runtime(format!("docker unavailable: {e}")))?;
+        if !pull.status.success() {
+            return Err(CoreError::Runtime(String::from_utf8_lossy(&pull.stderr).trim().to_string()));
+        }
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(60),
@@ -541,5 +587,39 @@ mod name_tests {
     fn strips_dhcp_suffixes() {
         assert_eq!(super::strip_domain("mac.attlocal.net"), "mac");
         assert_eq!(super::strip_domain("CALEB-PC"), "CALEB-PC");
+    }
+}
+
+#[cfg(test)]
+mod deploy_args_tests {
+    use super::*;
+
+    #[test]
+    fn ports_volumes_gpu() {
+        let mut spec = DeploySpec {
+            name: "a".into(),
+            image: "x".into(),
+            host_port: None,
+            container_port: None,
+            env: Default::default(),
+            ports: vec![],
+            volumes: vec![],
+            gpu: false,
+        };
+        spec.ports = vec!["53:53/udp".into(), "3000:3000".into()];
+        spec.volumes = vec!["adguard-conf:/opt/adguardhome/conf".into(), "/srv/media:/media".into()];
+        spec.gpu = true;
+        let args = extra_run_args(&spec).unwrap();
+        assert_eq!(args.iter().filter(|a| *a == "-p").count(), 2);
+        assert!(args.ends_with(&["--gpus".into(), "all".into()]));
+        for bad in ["53:53/sctp", "x:1", "1"] {
+            spec.ports = vec![bad.into()];
+            assert!(extra_run_args(&spec).is_err(), "{bad}");
+        }
+        spec.ports.clear();
+        for bad in ["vol:relative", "bad name:/x", ":/x", "/a:/b:/c"] {
+            spec.volumes = vec![bad.into()];
+            assert!(extra_run_args(&spec).is_err(), "{bad}");
+        }
     }
 }

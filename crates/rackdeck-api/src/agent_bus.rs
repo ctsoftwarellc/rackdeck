@@ -133,9 +133,9 @@ impl RemoteDispatch for AgentBus {
     }
 
     async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp> {
-        // Agent's own `docker run` timeout is 60s (image pulls), plus a check-in round trip.
+        // Agent pulls for up to 15 min, runs for up to 60s, plus a check-in round trip.
         match self
-            .run(node_id, AgentOp::Deploy { spec }, Duration::from_secs(75))
+            .run(node_id, AgentOp::Deploy { spec }, Duration::from_secs(990))
             .await?
         {
             AgentOutput::App { app } => Ok(app),

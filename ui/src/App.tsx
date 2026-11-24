@@ -100,6 +100,26 @@ function copyTextToClipboard(value: string): Promise<boolean> {
     .catch(() => legacyCopy(value));
 }
 
+function Help({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="help-btn" aria-label={`About ${title}`} onClick={() => setOpen(true)}>?</button>
+      {open && (
+        <div className="backdrop" onClick={() => setOpen(false)}>
+          <div className="modal" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
+            <div className="card-head">
+              <h2 className="card-title">{title}</h2>
+              <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>✕</button>
+            </div>
+            <div className="card-pad help-body">{children}</div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Copy({ value, display, className }: { value: string; display?: string; className?: string }) {
   const [status, setStatus] = useState<"idle" | "ok" | "err">("idle");
   return (
@@ -250,7 +270,7 @@ export function App() {
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [updateMsg, setUpdateMsg] = useState<Record<string, string>>({});
   // Which node is this controller, and is it password-protected (no password = localhost only).
-  const [controller, setController] = useState<{ nodeId: string | null; passwordSet: boolean }>({
+  const [controller, setController] = useState<{ nodeId: string | null; passwordSet: boolean; relayConfigured?: boolean }>({
     nodeId: null,
     passwordSet: true,
   });
@@ -454,7 +474,7 @@ export function App() {
         .then((r) => r.json())
         .then((d) => {
           setConnectHealth({ enabled: Boolean(d.connectEnabled), active: Boolean(d.connectActive) });
-          setController({ nodeId: d.nodeId ?? null, passwordSet: Boolean(d.passwordSet) });
+          setController({ nodeId: d.nodeId ?? null, passwordSet: Boolean(d.passwordSet), relayConfigured: Boolean(d.relayConfigured) });
         })
         .catch(() => {});
     };
@@ -1470,9 +1490,6 @@ export function App() {
             <div className="page-head">
               <div>
                 <h1 className="page-title">Network &amp; Connect</h1>
-                <p className="page-sub">
-                  How your machines reach each other, and how you reach them when you're away from home.
-                </p>
               </div>
             </div>
 
@@ -1485,25 +1502,22 @@ export function App() {
                       <span className={`pill ${primaryNode?.tailscaleIp ? "ok" : "neutral"}`}>
                         {primaryNode?.tailscaleIp ? `Detected · ${primaryNode.tailscaleIp}` : "Not detected"}
                       </span>
+                      <Help title="Tailscale">
+                        <p>Rackdeck checks for Tailscale with the read-only <span className="mono">tailscale ip</span> and <span className="mono">tailscale status</span> commands. It never signs into your Tailscale account.</p>
+                        <p>Already on Tailscale? You don't need Connect. Open Rackdeck at this machine's Tailscale IP from any device on your tailnet.</p>
+                      </Help>
                     </h2>
-                    <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
-                      {primaryNode?.tailscaleIp
-                        ? "Rackdeck found Tailscale by running the tailscale command on this machine (read-only: tailscale ip and tailscale status). It never logs into your Tailscale account and has no API key. "
-                        : "If you install Tailscale on your machines, Rackdeck will spot it automatically and list your other devices below. "}
-                      <strong style={{ color: "var(--text-1)" }}>Already on Tailscale? You don't need Connect.</strong> Open
-                      Rackdeck from any device on your tailnet at its Tailscale IP.
-                    </p>
                   </div>
                   <div>
                     <h2 className="card-title" style={{ marginBottom: 6 }}>
                       Rackdeck Connect
-                      <span className="pill neutral">Hosted version coming soon</span>
+                      <span className="pill neutral">Coming soon</span>
+                      <Help title="Rackdeck Connect">
+                        <p>Reach your dashboard from anywhere without Tailscale. This machine opens an encrypted connection out to a relay, which gives you an address like <span className="mono">you.rackdev.app</span>.</p>
+                        <p>No router ports and no VPN app on your phone. The hosted relay ($9/mo) isn't live yet.</p>
+                      </Help>
                     </h2>
-                    <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
-                      For when you don't want Tailscale everywhere. Your machine opens an outbound, encrypted connection to a
-                      relay server, and the relay forwards a public address like <span className="mono">you.rackdev.app</span> back
-                      to your dashboard. No router ports, no VPN app on your phone. The hosted relay ($9/mo) isn't live yet.
-                    </p>
+                    {controller.relayConfigured && (<>
                     <div style={{ marginTop: 12, fontSize: 13, color: "var(--text-2)" }} role="status">
                       {linkReq ? (
                         <>
@@ -1532,12 +1546,7 @@ export function App() {
                       {accountErr && <div style={{ marginTop: 6, color: "var(--crit)" }}>{accountErr}</div>}
                     </div>
                     <details style={{ marginTop: 10, fontSize: 13, color: "var(--text-2)" }}>
-                      <summary style={{ cursor: "pointer", color: "var(--text-1)" }}>Run your own relay instead</summary>
-                      <p style={{ lineHeight: 1.55 }}>
-                        Run <span className="mono">rackdeck-relay</span> on a server with a public IP, then start this controller
-                        with <span className="mono">RACKDECK_RELAY_URL=wss://your-relay/_rackdeck/tunnel</span>. Without that,
-                        the tunnel tries a relay on this machine (<span className="mono">127.0.0.1:7430</span>) and won't connect.
-                      </p>
+                      <summary style={{ cursor: "pointer", color: "var(--text-1)" }}>Tunnel</summary>
                       {primaryNode && (
                         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                           <input
@@ -1553,6 +1562,7 @@ export function App() {
                         </div>
                       )}
                     </details>
+                    </>)}
                   </div>
                 </div>
               </section>
@@ -1765,7 +1775,7 @@ export function App() {
               <div>
                 <h1 className="page-title">Access Controls</h1>
                 <p className="page-sub">
-                  Issue scoped MCP tokens for Cursor, Claude Code, or Codex without sharing SSH keys.
+                  Tokens for Claude Code, Codex, and Cursor.
                 </p>
               </div>
               <button
@@ -1782,12 +1792,13 @@ export function App() {
 
             <div className="stack-sections">
               <section className="card card-pad">
-                <h2 className="card-title" style={{ marginBottom: 6 }}>Let an AI coding tool manage your machines</h2>
-                <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
-                  Rackdeck has a built-in MCP server. Claude Code, Codex, or Cursor can connect to it with a token and use a
-                  small set of tools. You pick what each token can do, every call shows up in the Audit log, and you can revoke a
-                  token any time. No SSH keys, and no shell access, ever.
-                </p>
+                <h2 className="card-title" style={{ marginBottom: 14 }}>
+                  Let an AI coding tool manage your machines
+                  <Help title="MCP access">
+                    <p>Claude Code, Codex, or Cursor connect to Rackdeck's built-in MCP server with a token and get a small set of tools.</p>
+                    <p>You choose what each token can do. Every call shows up in the Audit log, and you can revoke a token any time. Tokens never get SSH keys or a shell.</p>
+                  </Help>
+                </h2>
                 <div className="field" style={{ marginBottom: 14 }}>
                   <label>MCP endpoint</label>
                   <div><Copy value={`${location.origin}/mcp`} /></div>

@@ -253,6 +253,8 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
         "version": env!("CARGO_PKG_VERSION"),
         "nodeId": state.local_node_id,
         "passwordSet": state.owner_password.is_some(),
+        // The built-in default points at a relay on this machine, which normal users don't run.
+        "relayConfigured": !state.relay_ws_url.contains("127.0.0.1:7430"),
         "connectEnabled": enabled,
         "connectActive": connected
     }))
@@ -609,6 +611,12 @@ async fn toggle_connect(
     };
     if let Err(e) = principal.authorize(Capability::ManageNetwork, None) {
         return err_res(e);
+    }
+    // The tunnel arrives from localhost, so without a password anyone with the public URL would be the owner.
+    if body.enabled && state.owner_password.is_none() {
+        return err_res(CoreError::Forbidden(
+            "set RACKDECK_PASSWORD before turning on Connect".into(),
+        ));
     }
 
     let updated: Node = match state

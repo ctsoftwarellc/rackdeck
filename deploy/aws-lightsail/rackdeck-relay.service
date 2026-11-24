@@ -11,11 +11,15 @@ Environment=RACKDECK_RELAY_PORT=7430
 Environment=RACKDECK_RELAY_AUDIENCE=connect.rackdeck.dev
 Environment=RACKDECK_RELAY_DB=/var/lib/rackdeck-relay/relay.db
 Environment=RACKDECK_RELAY_REQUIRE_SUBSCRIPTION=1
-Environment=STRIPE_SECRET_KEY=sk_live_replace_me
-Environment=RACKDECK_STRIPE_PRICE_ID=price_replace_me
-Environment=RACKDECK_STRIPE_WEBHOOK_SECRET=whsec_replace_me
-Environment=RACKDECK_CHECKOUT_SUCCESS_URL=https://rackdeck.dev/connect/success
-Environment=RACKDECK_CHECKOUT_CANCEL_URL=https://rackdeck.dev/connect/cancel
+Environment=RACKDECK_PUBLIC_URL=https://connect.rackdeck.dev
+Environment=RACKDECK_MAIL_FROM=Rackdeck <login@rackdeck.dev>
+# Secrets live here (chmod 600, owned by root):
+#   STRIPE_SECRET_KEY=sk_live_...
+#   RACKDECK_STRIPE_PRICE_ID=price_...
+#   RACKDECK_STRIPE_WEBHOOK_SECRET=whsec_...
+#   RESEND_API_KEY=re_...
+#   RACKDECK_SESSION_SECRET=<openssl rand -hex 32>
+EnvironmentFile=/etc/rackdeck-relay.env
 ExecStart=/usr/local/bin/rackdeck-relay
 Restart=always
 RestartSec=2

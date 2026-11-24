@@ -35,7 +35,9 @@ sha2 = "0.10"
 sysinfo = { version = "0.33", default-features = false, features = ["system", "disk", "network"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process", "io-util", "signal"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+# wss:// for Connect. rustls needs exactly one crypto provider compiled in; ring is the small one.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

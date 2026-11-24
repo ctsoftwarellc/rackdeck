@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = ["client", "relay"]
-client = ["dep:tokio-tungstenite"]
+client = ["dep:tokio-tungstenite", "dep:rustls"]
 relay = ["dep:axum"]
 
 [dependencies]
@@ -23,4 +23,5 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 tracing.workspace = true

@@ -52,7 +52,9 @@ pub fn spawn_connect_client(cfg: ConnectClientConfig) -> ConnectClientHandle {
             if *stop_rx.borrow() {
                 break;
             }
-            let _ = run_session(Arc::clone(&cfg), generation, Arc::clone(&connected_bg), &mut stop_rx).await;
+            if let Err(e) = run_session(Arc::clone(&cfg), generation, Arc::clone(&connected_bg), &mut stop_rx).await {
+                tracing::warn!("connect tunnel to {} dropped: {e:?}", cfg.relay_ws_url);
+            }
             connected_bg.store(false, Ordering::Relaxed);
             generation += 1;
             if *stop_rx.borrow() {

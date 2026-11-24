@@ -1,0 +1,13 @@
+/target
+/ui/node_modules
+/ui/dist
+*.db
+*.db-wal
+*.db-shm
+*.key
+.DS_Store
+
+# Internal GTM / non-public artifacts
+prompts/
+LAUNCH.md
+launch-checklist.html

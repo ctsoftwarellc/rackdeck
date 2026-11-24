@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rackdeck-core",
+    "crates/rackdeck-protocol",
+    "crates/rackdeck-store",
+    "crates/rackdeck-node",
+    "crates/rackdeck-discovery",
+    "crates/rackdeck-connect",
+    "crates/rackdeck-api",
+    "crates/rackdeck",
+    "crates/rackdeck-relay",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws", "macros"] }
+base64 = "0.22"
+bytes = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures-util = "0.3"
+hex = "0.4"
+mime_guess = "2"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["debug-embed"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk", "network"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process", "io-util", "signal"] }
+tokio-tungstenite = "0.26"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

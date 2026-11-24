@@ -1,0 +1,13 @@
+[package]
+name = "rackdeck-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+rackdeck-connect = { path = "../rackdeck-connect", default-features = false, features = ["relay"] }
+rackdeck-store = { path = "../rackdeck-store" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

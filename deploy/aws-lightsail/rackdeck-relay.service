@@ -1,0 +1,25 @@
+[Unit]
+Description=Rackdeck Connect Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rackdeck
+WorkingDirectory=/var/lib/rackdeck-relay
+Environment=RACKDECK_RELAY_PORT=7430
+Environment=RACKDECK_RELAY_AUDIENCE=connect.rackdeck.dev
+Environment=RACKDECK_RELAY_DB=/var/lib/rackdeck-relay/relay.db
+Environment=RACKDECK_RELAY_REQUIRE_SUBSCRIPTION=1
+Environment=STRIPE_SECRET_KEY=sk_live_replace_me
+Environment=RACKDECK_STRIPE_PRICE_ID=price_replace_me
+Environment=RACKDECK_STRIPE_WEBHOOK_SECRET=whsec_replace_me
+Environment=RACKDECK_CHECKOUT_SUCCESS_URL=https://rackdeck.dev/connect/success
+Environment=RACKDECK_CHECKOUT_CANCEL_URL=https://rackdeck.dev/connect/cancel
+ExecStart=/usr/local/bin/rackdeck-relay
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

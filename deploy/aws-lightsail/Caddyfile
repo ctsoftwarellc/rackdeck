@@ -1,0 +1,24 @@
+# Control plane ($10 Lightsail)
+app.rackdeck.dev {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:7420 {
+    flush_interval -1
+  }
+}
+
+# Connect WebSocket ingress ($7 Lightsail)
+connect.rackdeck.dev {
+  reverse_proxy 127.0.0.1:7430 {
+    flush_interval -1
+  }
+}
+
+# Wildcard customer app routes ($7 Lightsail — isolated registrable domain)
+*.rackdev.app {
+  tls {
+    dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+  }
+  reverse_proxy 127.0.0.1:7430 {
+    flush_interval -1
+  }
+}

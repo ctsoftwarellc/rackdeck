@@ -1,0 +1,19 @@
+[Unit]
+Description=Rackdeck Control Plane (All-in-One)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rackdeck
+WorkingDirectory=/var/lib/rackdeck
+Environment=RACKDECK_PORT=7420
+Environment=RACKDECK_DB=/var/lib/rackdeck/rackdeck.db
+Environment=RACKDECK_RELAY_URL=wss://connect.rackdeck.dev/_rackdeck/tunnel
+ExecStart=/usr/local/bin/rackdeck
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

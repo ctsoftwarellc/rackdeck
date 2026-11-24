@@ -1,0 +1,619 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::thread;
+
+use async_trait::async_trait;
+use rackdeck_core::{
+    now_unix_secs, AccessTokenRecord, AuditEvent, AuditRepository, ConnectRoute, ConnectTenant,
+    CoreError, CoreResult, FleetRepository, Node, RouteRepository, TenantRepository,
+    TokenRepository, TokenScope, UsageRepository,
+};
+use rusqlite::{params, Connection, OptionalExtension};
+use tokio::sync::{mpsc, oneshot};
+
+enum DbCmd {
+    UpsertNode(Node, oneshot::Sender<CoreResult<()>>),
+    ListNodes(oneshot::Sender<CoreResult<Vec<Node>>>),
+    GetNode(String, oneshot::Sender<CoreResult<Option<Node>>>),
+    SetConnectState {
+        node_id: String,
+        enabled: bool,
+        slug: Option<String>,
+        reply: oneshot::Sender<CoreResult<Node>>,
+    },
+    ListRoutes(oneshot::Sender<CoreResult<Vec<ConnectRoute>>>),
+    UpsertRoute(ConnectRoute, oneshot::Sender<CoreResult<()>>),
+    DeleteRoute(String, oneshot::Sender<CoreResult<bool>>),
+    CreateToken {
+        name: String,
+        client: String,
+        scope: TokenScope,
+        node_ids: Vec<String>,
+        token_hash: String,
+        expires_at: Option<u64>,
+        reply: oneshot::Sender<CoreResult<AccessTokenRecord>>,
+    },
+    ListTokens(oneshot::Sender<CoreResult<Vec<AccessTokenRecord>>>),
+    FindTokenByHash(String, oneshot::Sender<CoreResult<Option<AccessTokenRecord>>>),
+    RevokeToken(String, oneshot::Sender<CoreResult<bool>>),
+    TouchToken(String, u64, oneshot::Sender<CoreResult<()>>),
+    AppendAudit(AuditEvent, oneshot::Sender<CoreResult<()>>),
+    ListAudit(usize, oneshot::Sender<CoreResult<Vec<AuditEvent>>>),
+    AddUsage(String, u64, u64, oneshot::Sender<CoreResult<()>>),
+    GetUsage(String, oneshot::Sender<CoreResult<(u64, u64)>>),
+    UpsertTenant(ConnectTenant, oneshot::Sender<CoreResult<()>>),
+    GetTenant(String, oneshot::Sender<CoreResult<Option<ConnectTenant>>>),
+    SetTenantActiveByCustomer(String, bool, oneshot::Sender<CoreResult<()>>),
+}
+
+/// Dedicated bounded-queue SQLite store (WAL, foreign_keys, busy_timeout).
+#[derive(Clone)]
+pub struct SqliteStore {
+    tx: mpsc::Sender<DbCmd>,
+}
+
+impl SqliteStore {
+    pub fn open(path: impl AsRef<Path>) -> CoreResult<Arc<Self>> {
+        let path_buf = path.as_ref().to_path_buf();
+        let conn = if path_buf.as_os_str() == ":memory:" {
+            Connection::open_in_memory()
+        } else {
+            Connection::open(&path_buf)
+        }
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+        init_schema(&conn)?;
+
+        let (tx, mut rx) = mpsc::channel::<DbCmd>(256);
+        thread::Builder::new()
+            .name("rackdeck-sqlite".into())
+            .spawn(move || {
+                while let Some(cmd) = rx.blocking_recv() {
+                    handle_cmd(&conn, cmd);
+                }
+            })
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+
+        Ok(Arc::new(Self { tx }))
+    }
+
+    async fn call<T>(&self, make: impl FnOnce(oneshot::Sender<CoreResult<T>>) -> DbCmd) -> CoreResult<T> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(make(reply_tx))
+            .await
+            .map_err(|_| CoreError::Storage("sqlite worker closed".into()))?;
+        reply_rx
+            .await
+            .map_err(|_| CoreError::Storage("sqlite worker dropped reply".into()))?
+    }
+}
+
+fn init_schema(conn: &Connection) -> CoreResult<()> {
+    conn.execute_batch(
+        "
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+
+        CREATE TABLE IF NOT EXISTS nodes (
+            id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS routes (
+            id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tokens (
+            id TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            payload_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS usage_totals (
+            tenant TEXT PRIMARY KEY,
+            bytes_in INTEGER NOT NULL DEFAULT 0,
+            bytes_out INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS connect_tenants (
+            slug TEXT PRIMARY KEY,
+            stripe_customer_id TEXT,
+            payload_json TEXT NOT NULL
+        );
+        ",
+    )
+    .map_err(|e| CoreError::Storage(e.to_string()))
+}
+
+fn handle_cmd(conn: &Connection, cmd: DbCmd) {
+    match cmd {
+        DbCmd::UpsertNode(node, reply) => {
+            let res = serde_json::to_string(&node)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO nodes (id, payload_json) VALUES (?1, ?2)
+                         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json",
+                        params![node.id, json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::ListNodes(reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM nodes ORDER BY id ASC")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for item in rows {
+                    let s = item.map_err(|e| CoreError::Storage(e.to_string()))?;
+                    out.push(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    );
+                }
+                Ok(out)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::GetNode(id, reply) => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM nodes WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                match raw {
+                    Some(s) => Ok(Some(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    )),
+                    None => Ok(None),
+                }
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::SetConnectState {
+            node_id,
+            enabled,
+            slug,
+            reply,
+        } => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM nodes WHERE id = ?1",
+                        params![node_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut node: Node = match raw {
+                    Some(s) => {
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?
+                    }
+                    None => return Err(CoreError::NotFound(node_id)),
+                };
+                node.connect_enabled = enabled;
+                if let Some(s) = slug {
+                    node.connect_slug = Some(s);
+                } else if node.connect_slug.is_none() {
+                    node.connect_slug = Some(node.name.to_lowercase());
+                }
+                let json =
+                    serde_json::to_string(&node).map_err(|e| CoreError::Storage(e.to_string()))?;
+                conn.execute(
+                    "UPDATE nodes SET payload_json = ?1 WHERE id = ?2",
+                    params![json, node.id],
+                )
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+                Ok(node)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::ListRoutes(reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM routes ORDER BY id ASC")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for item in rows {
+                    let s = item.map_err(|e| CoreError::Storage(e.to_string()))?;
+                    out.push(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    );
+                }
+                Ok(out)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::UpsertRoute(route, reply) => {
+            let res = serde_json::to_string(&route)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO routes (id, payload_json) VALUES (?1, ?2)
+                         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json",
+                        params![route.id, json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::DeleteRoute(id, reply) => {
+            let res = conn
+                .execute("DELETE FROM routes WHERE id = ?1", params![id])
+                .map(|n| n > 0)
+                .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::CreateToken {
+            name,
+            client,
+            scope,
+            node_ids,
+            token_hash,
+            expires_at,
+            reply,
+        } => {
+            let res = (|| {
+                let rec = AccessTokenRecord {
+                    id: format!("tok-{}", uuid::Uuid::new_v4().simple()),
+                    name,
+                    client,
+                    scope,
+                    node_ids,
+                    created_at: now_unix_secs(),
+                    last_used_at: None,
+                    expires_at,
+                    revoked: false,
+                };
+                let json =
+                    serde_json::to_string(&rec).map_err(|e| CoreError::Storage(e.to_string()))?;
+                conn.execute(
+                    "INSERT INTO tokens (id, token_hash, payload_json) VALUES (?1, ?2, ?3)",
+                    params![rec.id, token_hash, json],
+                )
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+                Ok(rec)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::ListTokens(reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM tokens ORDER BY id DESC")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for item in rows {
+                    let s = item.map_err(|e| CoreError::Storage(e.to_string()))?;
+                    out.push(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    );
+                }
+                Ok(out)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::FindTokenByHash(hash, reply) => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM tokens WHERE token_hash = ?1",
+                        params![hash],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                match raw {
+                    Some(s) => Ok(Some(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    )),
+                    None => Ok(None),
+                }
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::RevokeToken(id, reply) => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM tokens WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let Some(s) = raw else { return Ok(false) };
+                let mut rec: AccessTokenRecord =
+                    serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?;
+                rec.revoked = true;
+                let json =
+                    serde_json::to_string(&rec).map_err(|e| CoreError::Storage(e.to_string()))?;
+                conn.execute(
+                    "UPDATE tokens SET payload_json = ?1 WHERE id = ?2",
+                    params![json, rec.id],
+                )
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+                Ok(true)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::TouchToken(id, ts, reply) => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM tokens WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                if let Some(s) = raw {
+                    let mut rec: AccessTokenRecord =
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?;
+                    rec.last_used_at = Some(ts);
+                    let json = serde_json::to_string(&rec)
+                        .map_err(|e| CoreError::Storage(e.to_string()))?;
+                    conn.execute(
+                        "UPDATE tokens SET payload_json = ?1 WHERE id = ?2",
+                        params![json, rec.id],
+                    )
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                }
+                Ok(())
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::AppendAudit(ev, reply) => {
+            let res = serde_json::to_string(&ev)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO audit_events (payload_json) VALUES (?1)",
+                        params![json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::ListAudit(limit, reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM audit_events ORDER BY seq DESC LIMIT ?1")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![limit as i64], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for item in rows {
+                    let s = item.map_err(|e| CoreError::Storage(e.to_string()))?;
+                    out.push(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    );
+                }
+                Ok(out)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::AddUsage(tenant, bytes_in, bytes_out, reply) => {
+            let res = conn
+                .execute(
+                    "INSERT INTO usage_totals (tenant, bytes_in, bytes_out) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(tenant) DO UPDATE SET
+                       bytes_in = usage_totals.bytes_in + excluded.bytes_in,
+                       bytes_out = usage_totals.bytes_out + excluded.bytes_out",
+                    params![tenant, bytes_in as i64, bytes_out as i64],
+                )
+                .map(|_| ())
+                .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::GetUsage(tenant, reply) => {
+            let res = conn
+                .query_row(
+                    "SELECT bytes_in, bytes_out FROM usage_totals WHERE tenant = ?1",
+                    params![tenant],
+                    |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+                )
+                .optional()
+                .map(|opt| opt.unwrap_or((0, 0)))
+                .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::UpsertTenant(tenant, reply) => {
+            let res = serde_json::to_string(&tenant)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO connect_tenants (slug, stripe_customer_id, payload_json) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(slug) DO UPDATE SET stripe_customer_id = excluded.stripe_customer_id, payload_json = excluded.payload_json",
+                        params![tenant.slug.to_ascii_lowercase(), tenant.stripe_customer_id, json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::GetTenant(slug, reply) => {
+            let res = (|| {
+                let raw: Option<String> = conn
+                    .query_row(
+                        "SELECT payload_json FROM connect_tenants WHERE slug = ?1",
+                        params![slug.to_ascii_lowercase()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                match raw {
+                    Some(s) => Ok(Some(
+                        serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?,
+                    )),
+                    None => Ok(None),
+                }
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::SetTenantActiveByCustomer(customer_id, active, reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT slug, payload_json FROM connect_tenants WHERE stripe_customer_id = ?1")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows: Vec<(String, String)> = stmt
+                    .query_map(params![customer_id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?
+                    .filter_map(Result::ok)
+                    .collect();
+                for (slug, raw) in rows {
+                    if let Ok(mut t) = serde_json::from_str::<ConnectTenant>(&raw) {
+                        t.active = active;
+                        if let Ok(json) = serde_json::to_string(&t) {
+                            let _ = conn.execute(
+                                "UPDATE connect_tenants SET payload_json = ?1 WHERE slug = ?2",
+                                params![json, slug],
+                            );
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            let _ = reply.send(res);
+        }
+    }
+}
+
+#[async_trait]
+impl FleetRepository for SqliteStore {
+    async fn upsert_node(&self, node: Node) -> CoreResult<()> {
+        self.call(|r| DbCmd::UpsertNode(node, r)).await
+    }
+    async fn list_nodes(&self) -> CoreResult<Vec<Node>> {
+        self.call(DbCmd::ListNodes).await
+    }
+    async fn get_node(&self, id: &str) -> CoreResult<Option<Node>> {
+        self.call(|r| DbCmd::GetNode(id.to_string(), r)).await
+    }
+    async fn set_connect_state(
+        &self,
+        node_id: &str,
+        enabled: bool,
+        slug: Option<String>,
+    ) -> CoreResult<Node> {
+        self.call(|r| DbCmd::SetConnectState {
+            node_id: node_id.to_string(),
+            enabled,
+            slug,
+            reply: r,
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl RouteRepository for SqliteStore {
+    async fn list_routes(&self) -> CoreResult<Vec<ConnectRoute>> {
+        self.call(DbCmd::ListRoutes).await
+    }
+    async fn upsert_route(&self, route: ConnectRoute) -> CoreResult<()> {
+        self.call(|r| DbCmd::UpsertRoute(route, r)).await
+    }
+    async fn delete_route(&self, id: &str) -> CoreResult<bool> {
+        self.call(|r| DbCmd::DeleteRoute(id.to_string(), r)).await
+    }
+}
+
+#[async_trait]
+impl TokenRepository for SqliteStore {
+    async fn create_token(
+        &self,
+        name: String,
+        client: String,
+        scope: TokenScope,
+        node_ids: Vec<String>,
+        token_hash: String,
+        expires_at: Option<u64>,
+    ) -> CoreResult<AccessTokenRecord> {
+        self.call(|r| DbCmd::CreateToken {
+            name,
+            client,
+            scope,
+            node_ids,
+            token_hash,
+            expires_at,
+            reply: r,
+        })
+        .await
+    }
+    async fn list_tokens(&self) -> CoreResult<Vec<AccessTokenRecord>> {
+        self.call(DbCmd::ListTokens).await
+    }
+    async fn find_by_hash(&self, token_hash: &str) -> CoreResult<Option<AccessTokenRecord>> {
+        self.call(|r| DbCmd::FindTokenByHash(token_hash.to_string(), r))
+            .await
+    }
+    async fn revoke_token(&self, id: &str) -> CoreResult<bool> {
+        self.call(|r| DbCmd::RevokeToken(id.to_string(), r)).await
+    }
+    async fn touch_token(&self, id: &str, ts: u64) -> CoreResult<()> {
+        self.call(|r| DbCmd::TouchToken(id.to_string(), ts, r))
+            .await
+    }
+}
+
+#[async_trait]
+impl AuditRepository for SqliteStore {
+    async fn append_audit(&self, event: AuditEvent) -> CoreResult<()> {
+        self.call(|r| DbCmd::AppendAudit(event, r)).await
+    }
+    async fn list_audit(&self, limit: usize) -> CoreResult<Vec<AuditEvent>> {
+        self.call(|r| DbCmd::ListAudit(limit, r)).await
+    }
+}
+
+#[async_trait]
+impl UsageRepository for SqliteStore {
+    async fn add_usage_delta(&self, tenant: &str, bytes_in: u64, bytes_out: u64) -> CoreResult<()> {
+        self.call(|r| DbCmd::AddUsage(tenant.to_string(), bytes_in, bytes_out, r))
+            .await
+    }
+    async fn get_usage(&self, tenant: &str) -> CoreResult<(u64, u64)> {
+        self.call(|r| DbCmd::GetUsage(tenant.to_string(), r)).await
+    }
+}
+
+#[async_trait]
+impl TenantRepository for SqliteStore {
+    async fn upsert_tenant(&self, tenant: ConnectTenant) -> CoreResult<()> {
+        self.call(|r| DbCmd::UpsertTenant(tenant, r)).await
+    }
+    async fn get_tenant(&self, slug: &str) -> CoreResult<Option<ConnectTenant>> {
+        self.call(|r| DbCmd::GetTenant(slug.to_string(), r)).await
+    }
+    async fn set_tenant_active_by_customer(&self, customer_id: &str, active: bool) -> CoreResult<()> {
+        self.call(|r| DbCmd::SetTenantActiveByCustomer(customer_id.to_string(), active, r))
+            .await
+    }
+}

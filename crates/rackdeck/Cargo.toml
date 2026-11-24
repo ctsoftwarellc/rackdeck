@@ -1,0 +1,27 @@
+[package]
+name = "rackdeck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+ed25519-dalek.workspace = true
+mime_guess.workspace = true
+rackdeck-api = { path = "../rackdeck-api" }
+rackdeck-connect = { path = "../rackdeck-connect", default-features = false, features = ["client"] }
+rackdeck-core = { path = "../rackdeck-core" }
+rackdeck-discovery = { path = "../rackdeck-discovery" }
+rackdeck-node = { path = "../rackdeck-node" }
+rackdeck-protocol = { path = "../rackdeck-protocol" }
+rackdeck-store = { path = "../rackdeck-store" }
+rand.workspace = true
+rust-embed.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+rackdeck-connect = { path = "../rackdeck-connect", features = ["client", "relay"] }
+serde_json.workspace = true

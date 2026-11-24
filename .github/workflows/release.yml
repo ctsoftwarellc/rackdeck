@@ -1,0 +1,52 @@
+name: Release Rackdeck
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+
+  build-binaries:
+    needs: build-ui
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p rackdeck -p rackdeck-relay
+      - run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf rackdeck-${{ matrix.target }}.tar.gz rackdeck
+          tar -czf rackdeck-relay-${{ matrix.target }}.tar.gz rackdeck-relay
+          shasum -a 256 rackdeck-*.tar.gz > SHA256SUMS-${{ matrix.target }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/rackdeck-*.tar.gz
+            target/${{ matrix.target }}/release/SHA256SUMS-*.txt

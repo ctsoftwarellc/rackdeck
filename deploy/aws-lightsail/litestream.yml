@@ -1,0 +1,9 @@
+dbs:
+  - path: /var/lib/rackdeck/rackdeck.db
+    replicas:
+      - type: s3
+        bucket: ${RACKDECK_BACKUP_BUCKET}
+        path: control-plane/rackdeck.db
+        region: us-east-1
+        sync-interval: 5s
+        retention: 168h

@@ -3,80 +3,65 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Rackdeck | The open-source control plane for your servers</title>
-<meta name="description" content="Manage your cloud VPS, home NVIDIA GPU rig, and Apple Silicon Mac from one 4.8 MB Apache-2.0 Rust binary. Free forever on LAN or Tailscale; optional $9/mo Connect on *.rackdev.app." />
+<title>Rackdeck — All your machines in one clean, secure dashboard</title>
+<meta name="description" content="Manage your home PC, GPU rig, Mac, and cloud VPS from one fast 4.8 MB open-source dashboard. Free forever on your home network or Tailscale; optional $9/mo secure remote access." />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Rackdeck" />
 <meta property="og:url" content="https://rackdeck.dev/" />
-<meta property="og:title" content="Rackdeck | The open-source control plane for your servers" />
-<meta property="og:description" content="One 4.8 MB Rust binary for Linux VPS, home NVIDIA GPU rigs, and Apple Silicon Macs. Bring your own Tailscale. Fork the whole thing." />
+<meta property="og:title" content="Rackdeck — All your machines in one clean, secure dashboard" />
+<meta property="og:description" content="Check temps and GPU memory, manage Docker apps, stream live logs, and reach your machines safely from anywhere — without opening router ports." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --bg: #000000;
-    --bg-elev: #0a0a0a;
-    --bg-card: #0d0d0d;
-    --bg-card-2: #121214;
+    --bg: #090b0f;
+    --bg-elev: #0f1218;
+    --bg-card: #131720;
+    --bg-card-2: #191f2c;
     --bg-hover: rgba(255, 255, 255, 0.04);
-    --fg: #f5f5f5;
-    --fg-muted: #a3a3a3;
-    --fg-dim: #737373;
-    --fg-faint: #525252;
+    --fg: #f3f5f8;
+    --fg-muted: #9aa4b2;
+    --fg-dim: #6c7686;
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.15);
-    --grid-line: rgba(255, 255, 255, 0.035);
-    --accent: #4f6bff;
-    --accent-hover: #627cff;
-    --accent-soft: #8ba0ff;
-    --accent-tint: rgba(79, 107, 255, 0.14);
-    --accent-border: rgba(79, 107, 255, 0.36);
-    --ok: #34d399;
-    --ok-tint: rgba(52, 211, 153, 0.13);
-    --warn: #fbbf24;
-    --warn-tint: rgba(251, 191, 36, 0.13);
-    --term-dot: #262626;
-    --invert-bg: #f5f5f5;
-    --invert-fg: #000000;
-    --invert-kbd: rgba(0, 0, 0, 0.1);
-    --shadow-card: 0 24px 64px -20px rgba(0, 0, 0, 0.85);
-    --shadow-float: 0 12px 32px -16px rgba(0, 0, 0, 0.75);
+    --accent: #2563eb;
+    --accent-hover: #3b82f6;
+    --accent-soft: #60a5fa;
+    --accent-tint: rgba(59, 130, 246, 0.13);
+    --accent-border: rgba(59, 130, 246, 0.36);
+    --ok: #22c55e;
+    --ok-tint: rgba(34, 197, 94, 0.13);
+    --warn: #f59e0b;
+    --dot: #2b3240;
+    --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.72);
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --radius: 12px;
     --radius-sm: 8px;
-    --radius-lg: 16px;
   }
 
   [data-theme="light"] {
-    --bg: #ffffff;
-    --bg-elev: #fafafa;
+    --bg: #f8fafc;
+    --bg-elev: #f1f5f9;
     --bg-card: #ffffff;
-    --bg-card-2: #f4f4f5;
-    --bg-hover: rgba(0, 0, 0, 0.03);
-    --fg: #111113;
-    --fg-muted: #52525b;
-    --fg-dim: #71717a;
-    --fg-faint: #a1a1aa;
-    --border: rgba(0, 0, 0, 0.09);
-    --border-strong: rgba(0, 0, 0, 0.16);
-    --grid-line: rgba(0, 0, 0, 0.045);
+    --bg-card-2: #f4f6f9;
+    --bg-hover: rgba(15, 23, 42, 0.035);
+    --fg: #0f172a;
+    --fg-muted: #475569;
+    --fg-dim: #64748b;
+    --border: rgba(15, 23, 42, 0.09);
+    --border-strong: rgba(15, 23, 42, 0.16);
     --accent: #2563eb;
     --accent-hover: #1d4ed8;
     --accent-soft: #2563eb;
     --accent-tint: rgba(37, 99, 235, 0.09);
-    --accent-border: rgba(37, 99, 235, 0.34);
+    --accent-border: rgba(37, 99, 235, 0.32);
     --ok: #16a34a;
     --ok-tint: rgba(22, 163, 74, 0.1);
     --warn: #d97706;
-    --warn-tint: rgba(217, 119, 6, 0.1);
-    --term-dot: #d4d4d8;
-    --invert-bg: #111113;
-    --invert-fg: #ffffff;
-    --invert-kbd: rgba(255, 255, 255, 0.16);
-    --shadow-card: 0 20px 50px -20px rgba(0, 0, 0, 0.14);
-    --shadow-float: 0 12px 28px -12px rgba(0, 0, 0, 0.12);
+    --dot: #cbd5e1;
+    --shadow-lg: 0 20px 50px -22px rgba(15, 23, 42, 0.16);
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -86,7 +71,7 @@
     color: var(--fg);
     font-family: var(--font-sans);
     font-size: 15px;
-    line-height: 1.5;
+    line-height: 1.55;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
@@ -94,36 +79,13 @@
   a { color: inherit; text-decoration: none; }
   button { cursor: pointer; color: inherit; background: none; border: 0; font-family: inherit; }
   svg { display: block; flex-shrink: 0; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  code { font-family: var(--font-mono); }
+  :focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; border-radius: 6px; }
 
-  .page {
-    display: flex;
-    flex-direction: column;
-    overflow-x: clip;
-  }
+  .page { display: flex; flex-direction: column; overflow-x: clip; }
+  .container { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 24px; }
 
-  .container {
-    width: 100%;
-    max-width: 1180px;
-    margin: 0 auto;
-    padding: 0 28px;
-  }
-
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--fg-dim);
-  }
-
-  .display {
-    font-weight: 600;
-    letter-spacing: -0.035em;
-    line-height: 1.05;
-  }
-
+  /* Buttons */
   .btn {
     display: inline-flex;
     align-items: center;
@@ -134,7 +96,7 @@
     padding: 10px 18px;
     font-size: 14px;
     font-weight: 500;
-    transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
   }
   .btn-primary {
     background: var(--accent);
@@ -143,44 +105,30 @@
   }
   .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
   .btn-primary:active { transform: translateY(0); }
-
   .btn-ghost {
     color: var(--fg-muted);
-    border: 1px solid var(--border);
-    background: transparent;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-card);
   }
-  .btn-ghost:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    background: var(--bg-hover);
-  }
+  .btn-ghost:hover { color: var(--fg); border-color: var(--accent-border); background: var(--bg-card-2); }
+  .btn-lg { padding: 12px 20px; font-size: 14.5px; border-radius: 10px; }
 
-  .btn-lg {
-    border-radius: 10px;
-    padding: 13px 22px;
-    font-size: 15px;
-  }
-
-  .tile {
+  .card {
+    background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-card);
-    position: relative;
-    overflow: hidden;
   }
 
   /* Nav */
   .nav {
     position: sticky;
     top: 0;
-    z-index: 50;
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    background: color-mix(in srgb, var(--bg) 78%, transparent);
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.25s ease;
+    z-index: 40;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom: 1px solid var(--border);
   }
-  .nav.is-scrolled { border-bottom-color: var(--border); }
   .nav-inner {
     height: 60px;
     display: flex;
@@ -188,212 +136,136 @@
     justify-content: space-between;
     gap: 16px;
   }
-  .nav-brand {
+  .brand {
     display: inline-flex;
     align-items: center;
     gap: 9px;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 15.5px;
+    font-weight: 650;
     letter-spacing: -0.02em;
   }
-  .nav-brand-badge {
+  .brand-tag {
     font-family: var(--font-mono);
     font-size: 10.5px;
-    font-weight: 500;
     color: var(--fg-dim);
     border: 1px solid var(--border);
-    padding: 2px 6px;
+    padding: 1px 6px;
     border-radius: 999px;
   }
-  .nav-right {
+  .nav-links {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 22px;
   }
   .nav-link {
     font-size: 13.5px;
     font-weight: 500;
     color: var(--fg-muted);
-    transition: color 0.16s;
+    transition: color 0.15s;
   }
   .nav-link:hover { color: var(--fg); }
-  .nav-pill {
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .nav-gh {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    height: 32px;
-    padding: 0 11px;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-card);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg);
+    white-space: nowrap;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .nav-gh:hover { border-color: var(--accent-border); background: var(--bg-card-2); }
+  .theme-btn {
+    width: 34px;
+    height: 34px;
     border-radius: 8px;
     border: 1px solid var(--border);
-    background: var(--bg-elev);
-    font-size: 12.5px;
+    background: var(--bg-card);
     color: var(--fg-muted);
-    white-space: nowrap;
-    transition: border-color 0.16s, color 0.16s;
-  }
-  .nav-pill strong { color: var(--fg); font-weight: 600; }
-  .nav-pill:hover { border-color: var(--border-strong); color: var(--fg); }
-  .theme-btn {
-    width: 32px;
-    height: 32px;
     display: inline-grid;
     place-items: center;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    color: var(--fg-muted);
-    transition: border-color 0.16s, color 0.16s, background 0.16s;
+    transition: color 0.15s, border-color 0.15s;
   }
-  .theme-btn:hover { border-color: var(--border-strong); color: var(--fg); background: var(--bg-hover); }
+  .theme-btn:hover { color: var(--fg); border-color: var(--border-strong); }
 
-  /* Sections */
-  section {
-    border-top: 1px solid var(--border);
-    padding: 84px 0;
+  /* Hero */
+  .hero {
+    padding: 58px 0 72px;
     position: relative;
   }
-  .section-head {
-    max-width: 680px;
-    margin-bottom: 40px;
+  .hero-ambient {
+    pointer-events: none;
+    position: absolute;
+    top: -90px;
+    left: 18%;
+    width: 620px;
+    height: 320px;
+    background: radial-gradient(ellipse at center, rgba(37, 99, 235, 0.13), transparent 72%);
+    filter: blur(30px);
   }
-  .section-head .eyebrow { display: block; margin-bottom: 14px; }
-  .section-head h2 {
-    font-size: clamp(30px, 3.8vw, 46px);
-    font-weight: 600;
-    letter-spacing: -0.032em;
+  [data-theme="light"] .hero-ambient {
+    background: radial-gradient(ellipse at center, rgba(37, 99, 235, 0.08), transparent 72%);
+  }
+  .hero-top {
+    position: relative;
+    max-width: 740px;
+    margin-bottom: 36px;
+  }
+  .hero-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-card);
+    font-size: 12.5px;
+    color: var(--fg-muted);
+    margin-bottom: 20px;
+  }
+  .hero-pill .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--ok);
+  }
+  .hero-title {
+    font-size: clamp(34px, 4.7vw, 56px);
+    font-weight: 700;
+    letter-spacing: -0.035em;
     line-height: 1.07;
     margin-bottom: 16px;
     text-wrap: balance;
   }
-  .section-head p {
-    color: var(--fg-muted);
-    font-size: 16.5px;
-    line-height: 1.55;
-    max-width: 600px;
-  }
-  .section-head.centered {
-    text-align: center;
-    margin-left: auto;
-    margin-right: auto;
-  }
-  .section-head.centered p { margin-left: auto; margin-right: auto; }
-
-  /* Hero */
-  .hero {
-    border-top: 0;
-    padding: 64px 0 72px;
-    overflow: hidden;
-  }
-  .hero-grid {
-    pointer-events: none;
-    position: absolute;
-    inset: 0;
-    background-image:
-      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
-      linear-gradient(var(--grid-line) 1px, transparent 1px);
-    background-size: 48px 48px;
-    -webkit-mask-image: radial-gradient(78% 58% at 50% 34%, #000 38%, transparent 100%);
-    mask-image: radial-gradient(78% 58% at 50% 34%, #000 38%, transparent 100%);
-  }
-  .hero-glow {
-    pointer-events: none;
-    position: absolute;
-    top: -120px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 740px;
-    height: 360px;
-    background: radial-gradient(ellipse at center, rgba(79, 107, 255, 0.14), transparent 70%);
-    filter: blur(28px);
-  }
-  [data-theme="light"] .hero-glow {
-    background: radial-gradient(ellipse at center, rgba(37, 99, 235, 0.08), transparent 70%);
-  }
-
-  /* Floating ecosystem squircles inspired by t3.codes */
-  .hero-float {
-    pointer-events: none;
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    --px: 0px;
-    --py: 0px;
-  }
-  .hero-float-mark {
-    position: absolute;
-    left: calc(50% + var(--x));
-    top: var(--y);
-    width: var(--s);
-    height: var(--s);
-    margin-left: calc(var(--s) / -2);
-    translate: calc(var(--px) * var(--depth)) calc(var(--py) * var(--depth));
-    transition: translate 0.35s cubic-bezier(0.2, 0.7, 0.2, 1);
-  }
-  .hero-float-card {
-    width: 100%;
-    height: 100%;
-    border-radius: 24%;
-    background: var(--bg-card);
-    border: 1px solid var(--border-strong);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    transform: rotate(var(--rot));
-    box-shadow: var(--shadow-float);
-    color: var(--fg);
-  }
-  .hero-float-card span {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    color: var(--fg-dim);
-    letter-spacing: 0.04em;
-  }
-  .hf-tailscale { --x: -295px; --y: 18px;  --s: 62px; --rot: 6deg;  --depth: 0.6; }
-  .hf-mcp       { --x:  295px; --y: 18px;  --s: 62px; --rot: -5deg; --depth: 0.6; }
-  .hf-docker    { --x: -480px; --y: 132px; --s: 84px; --rot: -8deg; --depth: 1.1; }
-  .hf-nvidia    { --x:  480px; --y: 132px; --s: 84px; --rot: 7deg;  --depth: 1.1; }
-  .hf-apple     { --x: -415px; --y: 345px; --s: 72px; --rot: 5deg;  --depth: 0.85; }
-  .hf-linux     { --x:  415px; --y: 345px; --s: 72px; --rot: -6deg; --depth: 0.85; }
-
-  .hero-inner {
-    position: relative;
-    z-index: 2;
-    text-align: center;
-  }
-  .hero-title {
-    font-size: clamp(36px, 5.4vw, 72px);
-    max-width: 16ch;
-    margin: 34px auto 20px;
-    text-wrap: balance;
-  }
   .hero-sub {
+    font-size: clamp(16px, 1.35vw, 18px);
     color: var(--fg-muted);
-    font-size: clamp(15.5px, 1.35vw, 18.5px);
-    line-height: 1.55;
-    max-width: 630px;
-    margin: 0 auto 30px;
-    text-wrap: balance;
+    line-height: 1.6;
+    max-width: 640px;
+    margin-bottom: 26px;
   }
-  .hero-actions {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 14px;
-    margin-bottom: 48px;
-  }
-  .hero-cta-row {
+  .hero-cta {
     display: flex;
     align-items: center;
-    justify-content: center;
     flex-wrap: wrap;
     gap: 10px;
+    margin-bottom: 16px;
   }
-  .install-chip {
+  .cmd-pill {
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    padding: 11px 14px;
+    padding: 10px 14px;
     border-radius: 10px;
     border: 1px solid var(--border-strong);
     background: var(--bg-card);
@@ -403,57 +275,45 @@
     max-width: 100%;
     min-width: 0;
     overflow: hidden;
-    transition: border-color 0.16s, background 0.16s;
+    transition: border-color 0.15s, background 0.15s;
   }
-  .install-chip:hover { border-color: var(--accent-border); background: var(--bg-card-2); }
-  .install-chip .prompt { color: var(--accent-soft); user-select: none; flex-shrink: 0; }
-  .install-chip code { overflow-x: auto; white-space: nowrap; min-width: 0; flex: 1; text-align: left; }
-  .copy-tag {
-    font-family: var(--font-mono);
+  .cmd-pill:hover { border-color: var(--accent-border); background: var(--bg-card-2); }
+  .cmd-pill .prompt { color: var(--accent-soft); flex-shrink: 0; user-select: none; }
+  .cmd-pill code { overflow-x: auto; white-space: nowrap; flex: 1; min-width: 0; text-align: left; }
+  .cmd-copy {
     font-size: 11px;
     color: var(--fg-dim);
     border-left: 1px solid var(--border);
     padding-left: 10px;
-    min-width: 48px;
+    min-width: 46px;
     text-align: center;
     flex-shrink: 0;
   }
-  .copy-tag.copied { color: var(--ok); }
-
-  .hero-source-link {
+  .cmd-copy.copied { color: var(--ok); }
+  .hero-reassure {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--fg-dim);
+  }
+  .hero-reassure span {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    font-size: 13.5px;
-    font-weight: 500;
-    color: var(--fg-muted);
-    transition: color 0.16s;
+    gap: 6px;
   }
-  .hero-source-link:hover { color: var(--fg); }
-  .hero-meta-line {
-    font-size: 12.5px;
-    color: var(--fg-dim);
-    display: inline-flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-  }
-  .hero-meta-line code { font-family: var(--font-mono); color: var(--fg-muted); font-size: 12px; }
+  .hero-reassure svg { color: var(--ok); }
 
-  /* Hero App Showcase Frame */
-  .hero-preview {
-    max-width: 1040px;
-    margin: 0 auto;
-    text-align: left;
-  }
-  .app-frame {
+  /* Interactive Dashboard Preview */
+  .preview-shell {
+    position: relative;
     border: 1px solid var(--border-strong);
     border-radius: 14px;
     background: var(--bg-card);
-    box-shadow: var(--shadow-card);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
   }
-  .app-chrome {
+  .preview-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -462,50 +322,46 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-elev);
   }
-  .chrome-dots {
+  .bar-left {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
+    min-width: 0;
   }
-  .chrome-dots i {
-    width: 10px;
-    height: 10px;
-    border-radius: 999px;
-    background: var(--term-dot);
-    display: block;
-  }
-  .chrome-url {
+  .win-dots { display: flex; gap: 6px; }
+  .win-dots i { width: 10px; height: 10px; border-radius: 999px; background: var(--dot); display: block; }
+  .bar-addr {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
     font-family: var(--font-mono);
     font-size: 11.5px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bar-addr svg { color: var(--ok); }
+  .bar-status {
+    font-size: 12px;
     color: var(--fg-dim);
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 10px;
-    border-radius: 6px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
+    white-space: nowrap;
   }
-  .chrome-url .dot-ok {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--ok);
-  }
-  .chrome-kbd {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-    border: 1px solid var(--border);
-    padding: 2px 7px;
-    border-radius: 5px;
-  }
-  .app-body {
+  .bar-status .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--ok); }
+
+  .preview-grid {
     display: grid;
-    grid-template-columns: 235px 1fr;
-    min-height: 365px;
+    grid-template-columns: 245px minmax(0, 1fr);
+    min-height: 360px;
   }
-  .app-sidebar {
+  .preview-side {
     border-right: 1px solid var(--border);
     background: var(--bg-elev);
     padding: 12px;
@@ -513,39 +369,39 @@
     flex-direction: column;
     gap: 6px;
   }
-  .side-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
+  .side-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--fg-dim);
     padding: 4px 8px 6px;
     display: flex;
     justify-content: space-between;
   }
-  .node-item {
+  .machine-btn {
     width: 100%;
     text-align: left;
     padding: 10px;
-    border-radius: 8px;
+    border-radius: 9px;
     border: 1px solid transparent;
-    transition: background 0.15s, border-color 0.15s;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
+    transition: background 0.14s, border-color 0.14s;
   }
-  .node-item:hover { background: var(--bg-hover); }
-  .node-item.is-active {
-    background: var(--bg-card-2);
+  .machine-btn:hover { background: var(--bg-hover); }
+  .machine-btn.is-active {
+    background: var(--bg-card);
     border-color: var(--border-strong);
   }
-  .node-top {
+  .machine-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
-  .node-name {
+  .machine-name {
     font-size: 13px;
     font-weight: 600;
     color: var(--fg);
@@ -553,69 +409,45 @@
     align-items: center;
     gap: 7px;
   }
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: var(--ok);
-  }
-  .node-tag {
+  .machine-name .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--ok); }
+  .machine-kind {
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--fg-dim);
     border: 1px solid var(--border);
-    padding: 1px 5px;
+    padding: 1px 6px;
     border-radius: 4px;
   }
-  .node-sub {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-  }
-  .side-foot {
+  .machine-meta { font-size: 11.5px; color: var(--fg-dim); }
+  .side-hint {
     margin-top: auto;
     padding: 10px 8px 2px;
     border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: 11.5px;
     color: var(--fg-dim);
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .side-foot .ok { color: var(--ok); }
+  .side-hint strong { color: var(--ok); font-weight: 500; }
 
-  .app-main {
+  .preview-main {
     padding: 16px 18px;
     display: flex;
     flex-direction: column;
     gap: 14px;
     min-width: 0;
   }
-  .app-head {
+  .pm-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 10px;
   }
-  .app-node-title {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .app-node-title h3 {
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-  }
-  .app-node-ip {
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    color: var(--fg-dim);
-  }
-  .app-tabs {
+  .pm-title h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.015em; }
+  .pm-title p { font-size: 12px; color: var(--fg-dim); font-family: var(--font-mono); }
+  .pm-tabs {
     display: inline-flex;
     padding: 3px;
     border-radius: 8px;
@@ -623,327 +455,275 @@
     background: var(--bg-elev);
     gap: 2px;
   }
-  .app-tab {
+  .pm-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
     font-size: 12px;
     font-weight: 500;
     color: var(--fg-muted);
-    padding: 4px 10px;
-    border-radius: 6px;
     transition: background 0.14s, color 0.14s;
   }
-  .app-tab.is-active {
-    background: var(--bg-card-2);
-    color: var(--fg);
-  }
+  .pm-tab.is-active { background: var(--bg-card-2); color: var(--fg); }
 
-  .kpi-row {
+  .stat-row {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
   }
-  .kpi {
+  .stat {
     padding: 11px 12px;
     border-radius: 9px;
     border: 1px solid var(--border);
     background: var(--bg-elev);
   }
-  .kpi-label {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--fg-dim);
-    margin-bottom: 4px;
-  }
-  .kpi-val {
-    font-family: var(--font-mono);
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--fg);
-  }
-  .kpi-sub {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--fg-dim);
-    margin-top: 2px;
-  }
-  .meter {
+  .stat-label { font-size: 11px; color: var(--fg-dim); font-weight: 500; margin-bottom: 3px; }
+  .stat-val { font-family: var(--font-mono); font-size: 15.5px; font-weight: 600; color: var(--fg); }
+  .stat-sub { font-size: 11px; color: var(--fg-dim); margin-top: 2px; }
+  .bar-track {
     height: 4px;
     border-radius: 999px;
     background: var(--border);
     overflow: hidden;
-    margin-top: 7px;
+    margin-top: 8px;
   }
-  .meter > span {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--accent);
-  }
-  .meter.ok > span { background: var(--ok); }
+  .bar-track > span { display: block; height: 100%; border-radius: 999px; background: var(--accent-soft); }
+  .bar-track.ok > span { background: var(--ok); }
 
-  .app-table {
+  .app-list {
     border: 1px solid var(--border);
     border-radius: 9px;
     overflow: hidden;
-    font-size: 12.5px;
   }
-  .app-table-row {
+  .app-row {
     display: grid;
-    grid-template-columns: 1.5fr 1.2fr 0.8fr 0.8fr;
+    grid-template-columns: 1.5fr 1.1fr 0.75fr 0.85fr;
     gap: 10px;
     align-items: center;
-    padding: 9px 12px;
+    padding: 10px 12px;
     border-top: 1px solid var(--border);
+    font-size: 13px;
   }
-  .app-table-row:first-child { border-top: 0; }
-  .app-table-row.is-head {
+  .app-row:first-child { border-top: 0; }
+  .app-row.is-head {
     background: var(--bg-elev);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.05em;
     color: var(--fg-dim);
   }
-  .app-table-row code {
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    color: var(--fg-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pill-ok {
+  .app-row code { font-size: 11.5px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge-run {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--ok);
-    background: var(--ok-tint);
-    padding: 2px 7px;
-    border-radius: 999px;
     width: fit-content;
-  }
-  .pill-ok::before {
-    content: "";
-    width: 5px;
-    height: 5px;
+    padding: 2px 8px;
     border-radius: 999px;
-    background: var(--ok);
+    background: var(--ok-tint);
+    color: var(--ok);
+    font-size: 11.5px;
+    font-weight: 500;
   }
-  .app-logs {
+  .badge-run::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: var(--ok); }
+
+  .log-box {
     border: 1px solid var(--border);
     border-radius: 9px;
     background: var(--bg-elev);
     padding: 12px 14px;
     font-family: var(--font-mono);
     font-size: 11.5px;
-    line-height: 1.65;
+    line-height: 1.7;
     color: var(--fg-muted);
     overflow-x: auto;
   }
-  .app-logs .ts { color: var(--fg-faint); margin-right: 8px; }
-  .app-logs .lvl { color: var(--ok); margin-right: 8px; }
-  .app-logs .hi { color: var(--fg); }
+  .log-box .ts { color: var(--fg-dim); margin-right: 8px; }
+  .log-box .ok { color: var(--ok); margin-right: 8px; }
+  .log-box .msg { color: var(--fg); }
 
-  /* Harness-style 6-column stack strip */
-  .stack-grid {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-card);
-    overflow: hidden;
+  /* Sections */
+  section {
+    border-top: 1px solid var(--border);
+    padding: 76px 0;
   }
-  .stack-cell {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 18px 14px;
-    min-width: 0;
-    border-right: 1px solid var(--border);
-    transition: background 0.18s;
+  .sec-head {
+    max-width: 640px;
+    margin-bottom: 36px;
   }
-  .stack-cell:last-child { border-right: 0; }
-  .stack-cell:hover { background: var(--bg-hover); }
-  .stack-icon {
-    width: 28px;
-    height: 28px;
-    border-radius: 7px;
-    border: 1px solid var(--border);
-    background: var(--bg-elev);
-    display: grid;
-    place-items: center;
-    color: var(--fg);
-    flex-shrink: 0;
-  }
-  .stack-meta { min-width: 0; flex: 1; }
-  .stack-name {
-    font-size: 13px;
-    font-weight: 500;
-    letter-spacing: -0.01em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .stack-tag {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--fg-dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .facts-strip {
-    margin-top: 18px;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-  }
-  .fact-card {
-    padding: 18px 20px;
-  }
-  .fact-num {
-    font-family: var(--font-mono);
-    font-size: 20px;
+  .sec-kicker {
+    display: inline-block;
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: -0.02em;
-    margin-bottom: 5px;
-  }
-  .fact-card p {
-    font-size: 13.5px;
-    color: var(--fg-muted);
-    line-height: 1.5;
-  }
-
-  /* Split Visual Feature (t3.codes sec-git inspired) */
-  .split-inner {
-    display: grid;
-    grid-template-columns: 1.08fr 1fr;
-    align-items: center;
-    gap: 56px;
-  }
-  .ops-visual {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 16px;
-  }
-  .deploy-card { padding: 20px; }
-  .deploy-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    color: var(--accent-soft);
     margin-bottom: 10px;
   }
-  .deploy-head svg { color: var(--ok); }
-  .deploy-title { flex: 1; font-size: 14.5px; font-weight: 500; }
-  .deploy-status {
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    color: var(--ok);
-    font-weight: 500;
+  .sec-head h2 {
+    font-size: clamp(26px, 3.2vw, 38px);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.12;
+    margin-bottom: 12px;
+    text-wrap: balance;
   }
-  .deploy-meta {
+  .sec-head p {
+    color: var(--fg-muted);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  /* 3-col Hardware Grid */
+  .hw-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .hw-card {
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .hw-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    color: var(--accent-soft);
+    display: grid;
+    place-items: center;
+  }
+  .hw-card h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.015em; }
+  .hw-card p { font-size: 14px; color: var(--fg-muted); line-height: 1.55; }
+  .hw-tags {
+    margin-top: auto;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
     display: flex;
     flex-wrap: wrap;
-    gap: 14px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-muted);
-    margin-bottom: 14px;
+    gap: 6px;
   }
-  .deploy-rows {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    margin-bottom: 14px;
-  }
-  .deploy-rows > div {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--border);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-muted);
-  }
-  .deploy-rows > div:first-child { border-top: 0; }
-  .deploy-rows span { color: var(--fg-dim); flex-shrink: 0; }
-  .deploy-rows .ok { color: var(--ok); }
-  .deploy-foot {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
+  .hw-tags span {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--fg-dim);
-  }
-  .trail {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    margin: -4px 0;
-  }
-  .trail-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--border-strong);
-  }
-  .trail-line {
-    width: 1px;
-    height: 26px;
-    background: var(--border-strong);
-  }
-  .pill-action-shell { display: flex; justify-content: center; }
-  .pill-action {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--invert-bg);
-    color: var(--invert-fg);
-    border-radius: 10px;
-    padding: 11px 18px;
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .pill-action kbd {
-    font-family: var(--font-mono);
-    background: var(--invert-kbd);
-    border-radius: 4px;
-    padding: 2px 6px;
-    font-size: 10.5px;
-    font-weight: 500;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    padding: 2px 7px;
+    border-radius: 5px;
   }
 
-  .checklist {
-    list-style: none;
+  /* 2x2 Feature Bento Grid */
+  .bento-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .bento-card {
+    padding: 24px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 24px;
-  }
-  .checklist li {
-    display: flex;
-    align-items: flex-start;
     gap: 10px;
-    font-size: 14.5px;
+  }
+  .bento-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .bento-card h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
+  .bento-pill {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-dim);
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .bento-card p { font-size: 14.5px; color: var(--fg-muted); line-height: 1.6; }
+  .bento-mini {
+    margin-top: 8px;
+    padding: 12px 14px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    font-family: var(--font-mono);
+    font-size: 12px;
     color: var(--fg-muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    overflow-x: auto;
   }
-  .checklist li svg {
-    color: var(--ok);
-    margin-top: 3px;
+  .bento-mini strong { color: var(--fg); font-weight: 500; }
+  .bento-mini .ok { color: var(--ok); white-space: nowrap; }
+
+  /* 3-Step Setup Strip */
+  .steps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 18px;
   }
+  .step-card { padding: 20px; }
+  .step-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    background: var(--accent-tint);
+    border: 1px solid var(--accent-border);
+    color: var(--accent-soft);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    display: grid;
+    place-items: center;
+    margin-bottom: 12px;
+  }
+  .step-card h3 { font-size: 15.5px; font-weight: 600; margin-bottom: 6px; }
+  .step-card p { font-size: 13.5px; color: var(--fg-muted); line-height: 1.55; }
+
+  .term-card { overflow: hidden; }
+  .term-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elev);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-dim);
+  }
+  .term-copy {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+    padding: 3px 9px;
+    border-radius: 6px;
+  }
+  .term-copy:hover { color: var(--fg); border-color: var(--accent-border); }
+  .term-body {
+    padding: 18px 20px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.8;
+    overflow-x: auto;
+  }
+  .term-body .p { color: var(--accent-soft); margin-right: 8px; }
+  .term-body .dim { color: var(--fg-dim); }
+  .term-body .ok { color: var(--ok); }
+  .term-line { white-space: nowrap; }
 
   /* Pricing */
   .pricing-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 16px;
   }
   .price-card {
@@ -951,173 +731,74 @@
     display: flex;
     flex-direction: column;
   }
-  .price-card.is-featured {
+  .price-card.featured {
     border-color: var(--accent-border);
-    box-shadow: inset 0 1px 0 0 rgba(79, 107, 255, 0.35);
+    background: linear-gradient(180deg, var(--accent-tint) 0%, var(--bg-card) 130px);
   }
-  .price-top {
+  .price-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
-  .price-name { font-size: 16px; font-weight: 600; letter-spacing: -0.015em; }
-  .price-badge {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    padding: 3px 8px;
+  .price-name { font-size: 16.5px; font-weight: 600; }
+  .price-tag {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
     border-radius: 999px;
     border: 1px solid var(--border);
     color: var(--fg-muted);
   }
-  .price-card.is-featured .price-badge {
+  .price-card.featured .price-tag {
     border-color: var(--accent-border);
     background: var(--accent-tint);
     color: var(--accent-soft);
   }
-  .price-amount {
+  .price-num {
     display: flex;
     align-items: baseline;
     gap: 5px;
     margin-bottom: 10px;
   }
-  .price-amount strong {
-    font-size: 36px;
-    font-weight: 600;
-    letter-spacing: -0.04em;
-    line-height: 1;
-  }
-  .price-amount span {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--fg-dim);
-  }
-  .price-desc {
-    font-size: 13.5px;
-    color: var(--fg-muted);
-    margin-bottom: 18px;
-    min-height: 40px;
-  }
+  .price-num strong { font-size: 36px; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
+  .price-num span { font-size: 13px; color: var(--fg-dim); }
+  .price-desc { font-size: 13.5px; color: var(--fg-muted); margin-bottom: 18px; min-height: 42px; }
   .price-list {
     list-style: none;
     display: flex;
     flex-direction: column;
     gap: 9px;
-    border-top: 1px solid var(--border);
     padding-top: 16px;
     margin-bottom: 22px;
+    border-top: 1px solid var(--border);
     font-size: 13.5px;
     color: var(--fg-muted);
     flex: 1;
   }
-  .price-list li {
+  .price-list li { display: flex; align-items: flex-start; gap: 8px; }
+  .price-list svg { color: var(--ok); margin-top: 3px; }
+
+  .compare-note {
+    margin-top: 18px;
+    padding: 18px 22px;
     display: flex;
     align-items: flex-start;
-    gap: 8px;
-  }
-  .price-list svg { color: var(--ok); margin-top: 3px; }
-  .price-list code { font-family: var(--font-mono); font-size: 12px; color: var(--fg); }
-
-  /* Honest Compare Strip */
-  .compare-box {
-    margin-top: 22px;
-    padding: 18px 22px;
-    display: grid;
-    grid-template-columns: 200px 1fr;
+    justify-content: space-between;
     gap: 20px;
-    align-items: start;
-  }
-  .compare-box h3 {
     font-size: 14px;
-    font-weight: 600;
-    margin-top: 4px;
-  }
-  .compare-box p {
-    font-size: 13.5px;
     color: var(--fg-muted);
-    line-height: 1.6;
   }
-  .compare-box strong { color: var(--fg); font-weight: 500; }
+  .compare-note strong { color: var(--fg); }
 
-  /* Open Source + Terminal (t3.codes sec-open inspired) */
-  .open-grid {
+  /* FAQ */
+  .faq-list {
     display: grid;
-    grid-template-columns: 1.2fr 1fr;
-    gap: 18px;
-    align-items: stretch;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
   }
-  .open-term {
-    display: flex;
-    flex-direction: column;
-  }
-  .open-term-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 11px 14px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-elev);
-  }
-  .open-term-head i {
-    width: 10px;
-    height: 10px;
-    border-radius: 999px;
-    background: var(--term-dot);
-    display: block;
-  }
-  .open-term-title {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-dim);
-    flex: 1;
-    text-align: center;
-  }
-  .open-term-copy {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--fg-muted);
-    border: 1px solid var(--border);
-    padding: 3px 8px;
-    border-radius: 6px;
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .open-term-copy:hover { border-color: var(--border-strong); color: var(--fg); }
-  .open-term-body {
-    padding: 20px 22px;
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    line-height: 1.75;
-    overflow-x: auto;
-    flex: 1;
-  }
-  .open-term-body .prompt { color: var(--accent-soft); margin-right: 8px; }
-  .open-term-body .dim { color: var(--fg-dim); }
-  .open-term-body .ok { color: var(--ok); }
-  .open-term-body .cmd-row { white-space: nowrap; }
-  .caret {
-    display: inline-block;
-    width: 7px;
-    height: 14px;
-    background: var(--fg);
-    vertical-align: -2px;
-    margin-left: 4px;
-    animation: blink 1s steps(2, end) infinite;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  /* Skeptic FAQ inside Open Grid right tile */
-  .faq-tile {
-    padding: 8px 20px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-  }
-  .faq-item {
-    border-top: 1px solid var(--border);
-    padding: 14px 0;
-  }
-  .faq-item:first-child { border-top: 0; }
+  .faq-item { padding: 18px 20px; }
   .faq-item summary {
     list-style: none;
     cursor: pointer;
@@ -1125,60 +806,42 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    font-size: 14px;
-    font-weight: 500;
+    font-size: 15px;
+    font-weight: 600;
     color: var(--fg);
   }
   .faq-item summary::-webkit-details-marker { display: none; }
   .faq-item summary::after {
     content: "+";
     font-family: var(--font-mono);
-    font-size: 15px;
+    font-size: 16px;
     color: var(--fg-dim);
-    flex-shrink: 0;
   }
   .faq-item[open] summary::after { content: "−"; color: var(--fg); }
   .faq-item p {
-    margin-top: 8px;
-    font-size: 13px;
+    margin-top: 10px;
+    font-size: 14px;
     color: var(--fg-muted);
-    line-height: 1.55;
-  }
-  .faq-item code {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--fg);
+    line-height: 1.6;
   }
 
-  /* Final CTA */
-  .sec-cta {
-    text-align: center;
-    padding: 92px 0;
-  }
-  .sec-cta h2 {
-    font-size: clamp(32px, 4.4vw, 54px);
-    max-width: 18ch;
-    margin: 0 auto 18px;
-    text-wrap: balance;
-  }
-  .sec-cta p {
-    color: var(--fg-muted);
-    font-size: 16.5px;
-    max-width: 520px;
-    margin: 0 auto 30px;
-  }
-  .cta-buttons {
+  /* Bottom CTA */
+  .cta-box {
+    padding: 36px 32px;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 20px;
   }
+  .cta-box h2 { font-size: clamp(24px, 2.8vw, 32px); font-weight: 700; letter-spacing: -0.025em; margin-bottom: 6px; }
+  .cta-box p { font-size: 15px; color: var(--fg-muted); }
+  .cta-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
   /* Footer */
   .footer {
     border-top: 1px solid var(--border);
-    padding: 34px 0 42px;
+    padding: 30px 0 38px;
     font-size: 13px;
     color: var(--fg-dim);
   }
@@ -1189,87 +852,66 @@
     flex-wrap: wrap;
     gap: 16px;
   }
-  .footer-links {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 20px;
-  }
+  .footer-links { display: flex; flex-wrap: wrap; gap: 18px; }
   .footer-links a:hover { color: var(--fg); }
 
   /* Responsive */
-  @media (max-width: 1120px) {
-    .hero-float { display: none; }
-    .stack-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .stack-cell:nth-child(3n) { border-right: 0; }
-    .stack-cell:nth-child(n+4) { border-top: 1px solid var(--border); }
-  }
-  @media (max-width: 900px) {
-    .app-body { grid-template-columns: 1fr; }
-    .app-sidebar {
+  @media (max-width: 920px) {
+    .nav-links { display: none; }
+    .preview-grid { grid-template-columns: 1fr; }
+    .preview-side {
       border-right: 0;
       border-bottom: 1px solid var(--border);
       flex-direction: row;
       overflow-x: auto;
-      gap: 8px;
     }
-    .side-label, .side-foot { display: none; }
-    .node-item { min-width: 190px; }
-    .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .split-inner, .open-grid, .pricing-grid, .facts-strip { grid-template-columns: minmax(0, 1fr); }
-    .compare-box { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-    .nav-link { display: none; }
+    .side-title, .side-hint { display: none; }
+    .machine-btn { min-width: 195px; }
+    .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hw-grid, .bento-grid, .steps-grid, .pricing-grid, .faq-list { grid-template-columns: 1fr; }
+    .bar-status { display: none; }
   }
   @media (max-width: 560px) {
     .container { padding: 0 18px; }
-    section { padding: 60px 0; }
-    .hero { padding: 44px 0 56px; }
-    .hero-title { margin-top: 12px; }
-    .nav-pill strong { display: none; }
-    .nav-right { gap: 10px; }
-    .stack-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .stack-cell { padding: 14px 12px; border-right: 1px solid var(--border) !important; border-top: 1px solid var(--border); }
-    .stack-cell:nth-child(2n) { border-right: 0 !important; }
-    .stack-cell:nth-child(-n+2) { border-top: 0; }
-    .app-table-row { grid-template-columns: 1.4fr 0.9fr 0.8fr; }
-    .app-table-row > :nth-child(2) { display: none; }
-    .chrome-kbd { display: none; }
-    .hero-cta-row { width: 100%; }
-    .install-chip { width: 100%; font-size: 11.5px; padding: 10px 12px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .caret { animation: none; }
-    .hero-float-mark { transition: none; translate: none; }
+    section { padding: 56px 0; }
+    .hero { padding: 40px 0 54px; }
+    .cmd-pill { width: 100%; font-size: 11.5px; }
+    .app-row { grid-template-columns: 1.4fr 0.8fr 0.9fr; }
+    .app-row > :nth-child(2) { display: none; }
+    .cta-box { padding: 24px 20px; }
   }
 </style>
 </head>
 <body>
 <div class="page">
-  <!-- Sticky Glass Nav -->
-  <nav class="nav" id="nav">
+  <!-- Nav -->
+  <nav class="nav">
     <div class="container nav-inner">
-      <a href="#" class="nav-brand" aria-label="Rackdeck home">
+      <a href="#" class="brand" aria-label="Rackdeck home">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <rect x="2.5" y="3" width="19" height="5.2" rx="1.6" stroke="currentColor" stroke-width="1.8" />
           <rect x="2.5" y="9.4" width="19" height="5.2" rx="1.6" stroke="currentColor" stroke-width="1.8" />
           <rect x="2.5" y="15.8" width="19" height="5.2" rx="1.6" stroke="currentColor" stroke-width="1.8" />
-          <circle cx="6.2" cy="5.6" r="1.05" fill="#4f6bff" />
-          <circle cx="6.2" cy="12" r="1.05" fill="#34d399" />
-          <circle cx="6.2" cy="18.4" r="1.05" fill="currentColor" opacity="0.55" />
+          <circle cx="6.2" cy="5.6" r="1.1" fill="#3b82f6" />
+          <circle cx="6.2" cy="12" r="1.1" fill="#22c55e" />
+          <circle cx="6.2" cy="18.4" r="1.1" fill="currentColor" opacity="0.5" />
         </svg>
         <span>Rackdeck</span>
-        <span class="nav-brand-badge">v0.1</span>
+        <span class="brand-tag">v0.1</span>
       </a>
-      <div class="nav-right">
-        <a class="nav-link" href="#stack">Stack</a>
-        <a class="nav-link" href="#operations">Operations</a>
+      <div class="nav-links">
+        <a class="nav-link" href="#hardware">Hardware</a>
+        <a class="nav-link" href="#features">Features</a>
+        <a class="nav-link" href="#setup">Quick setup</a>
         <a class="nav-link" href="#pricing">Pricing</a>
-        <a class="nav-link" href="#open-source">Open Source</a>
-        <a class="nav-pill" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.94c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.22 10.22 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
-          <span><strong>Apache-2.0</strong> GitHub</span>
+        <a class="nav-link" href="#faq">FAQ</a>
+      </div>
+      <div class="nav-actions">
+        <a class="nav-gh" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.94c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.22 10.22 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
+          <span>GitHub</span>
         </a>
-        <button class="theme-btn" id="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">
+        <button class="theme-btn" id="theme-toggle" type="button" aria-label="Switch color theme" title="Switch theme">
           <svg id="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41"/></svg>
           <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
         </button>
@@ -1279,447 +921,373 @@
 
   <main>
     <!-- Hero -->
-    <section class="hero" id="top">
-      <div class="hero-grid" aria-hidden="true"></div>
-      <div class="hero-glow" aria-hidden="true"></div>
-
-      <!-- Floating ecosystem squircles -->
-      <div class="hero-float" id="hero-float" aria-hidden="true">
-        <span class="hero-float-mark hf-tailscale">
-          <span class="hero-float-card">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <circle cx="5" cy="5" r="2.2" opacity="0.35"/><circle cx="12" cy="5" r="2.2"/><circle cx="19" cy="5" r="2.2" opacity="0.35"/>
-              <circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/>
-              <circle cx="5" cy="19" r="2.2" opacity="0.35"/><circle cx="12" cy="19" r="2.2"/><circle cx="19" cy="19" r="2.2" opacity="0.35"/>
-            </svg>
-            <span>Tailscale</span>
-          </span>
-        </span>
-        <span class="hero-float-mark hf-mcp">
-          <span class="hero-float-card">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M8 7 3 12l5 5"/><path d="m16 7 5 5-5 5"/><path d="m14 4-4 16"/>
-            </svg>
-            <span>MCP</span>
-          </span>
-        </span>
-        <span class="hero-float-mark hf-docker">
-          <span class="hero-float-card">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="10" width="4" height="3.5" rx="0.6"/><rect x="8.5" y="10" width="4" height="3.5" rx="0.6"/>
-              <rect x="14" y="10" width="4" height="3.5" rx="0.6"/><rect x="8.5" y="5.5" width="4" height="3.5" rx="0.6"/>
-              <path d="M2.5 15.5c.8 3 3.7 4.5 8.5 4.5 5.4 0 9-2.2 10.2-6.2-1.1-.4-2.1-.4-3-.1"/>
-            </svg>
-            <span>Docker</span>
-          </span>
-        </span>
-        <span class="hero-float-mark hf-nvidia">
-          <span class="hero-float-card">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="4" y="4" width="16" height="16" rx="2.5"/><rect x="8.5" y="8.5" width="7" height="7" rx="1"/>
-              <path d="M9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/>
-            </svg>
-            <span>GPU</span>
-          </span>
-        </span>
-        <span class="hero-float-mark hf-apple">
-          <span class="hero-float-card">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 17v3"/>
-            </svg>
-            <span>MLX</span>
-          </span>
-        </span>
-        <span class="hero-float-mark hf-linux">
-          <span class="hero-float-card">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9 3 3-3 3"/><path d="M12.5 15H17"/>
-            </svg>
-            <span>Linux</span>
-          </span>
-        </span>
-      </div>
-
-      <div class="container hero-inner">
-        <h1 class="hero-title display">
-          The open-source<br />control plane<br />for your servers.
-        </h1>
-        <p class="hero-sub">
-          Manage your cloud VPS, home NVIDIA GPU rig, and Apple Silicon Mac from one 4.8&nbsp;MB Rust binary. Bring your own Tailscale. Fork the whole thing.
-        </p>
-
-        <div class="hero-actions">
-          <div class="hero-cta-row">
+    <section class="hero" style="border-top:0">
+      <div class="hero-ambient" aria-hidden="true"></div>
+      <div class="container">
+        <div class="hero-top">
+          <div class="hero-pill">
+            <span class="dot"></span>
+            <span>Open-source · Free on your home network · Single 4.8 MB app</span>
+          </div>
+          <h1 class="hero-title">All your machines.<br />One clean, secure dashboard.</h1>
+          <p class="hero-sub">
+            Keep tabs on your home PC, GPU rig, Mac, and cloud VPS in one fast place. Check temps and memory, run Docker apps, view live logs, and reach everything safely from your phone or laptop — without opening router ports.
+          </p>
+          <div class="hero-cta">
             <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
               <span class="btn-label">Copy install command</span>
             </button>
-            <button type="button" class="install-chip" data-copy="curl -fsSL https://get.rackdeck.dev | sh" aria-label="Copy curl install command">
+            <button type="button" class="cmd-pill" data-copy="curl -fsSL https://get.rackdeck.dev | sh" aria-label="Copy install command">
               <span class="prompt">$</span>
               <code>curl -fsSL https://get.rackdeck.dev | sh</code>
-              <span class="copy-tag">Copy</span>
+              <span class="cmd-copy">Copy</span>
             </button>
           </div>
-          <a class="hero-source-link" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.94c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.22 10.22 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
-            <span>Steal our code (Apache-2.0)</span>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg>
-          </a>
-          <p class="hero-meta-line">
-            <span>Free forever on LAN &amp; Tailscale</span>
-            <span aria-hidden="true">·</span>
-            <span>Optional Connect on <code>*.rackdev.app</code></span>
-            <span aria-hidden="true">·</span>
-            <span>Zero product telemetry</span>
-          </p>
-        </div>
-
-        <!-- Interactive Rackdeck Control Panel Frame -->
-        <div class="hero-preview">
-          <div class="app-frame">
-            <div class="app-chrome">
-              <div class="chrome-dots" aria-hidden="true"><i></i><i></i><i></i></div>
-              <div class="chrome-url">
-                <span class="dot-ok"></span>
-                <span>caleb.rackdev.app/#/machines</span>
-              </div>
-              <span class="chrome-kbd">⌘K</span>
-            </div>
-            <div class="app-body">
-              <aside class="app-sidebar" aria-label="Fleet machines">
-                <div class="side-label"><span>Machines</span><span>3 online</span></div>
-                <button type="button" class="node-item is-active" data-node="gpu">
-                  <div class="node-top">
-                    <span class="node-name"><span class="status-dot"></span>home-rtx-5090</span>
-                    <span class="node-tag">GPU</span>
-                  </div>
-                  <div class="node-sub">Ubuntu 24.04 · 32 GB VRAM</div>
-                </button>
-                <button type="button" class="node-item" data-node="vps">
-                  <div class="node-top">
-                    <span class="node-name"><span class="status-dot"></span>aws-lightsail-east</span>
-                    <span class="node-tag">VPS</span>
-                  </div>
-                  <div class="node-sub">Debian 12 · 2 vCPU · 2 GB</div>
-                </button>
-                <button type="button" class="node-item" data-node="mac">
-                  <div class="node-top">
-                    <span class="node-name"><span class="status-dot"></span>mac-studio-m4</span>
-                    <span class="node-tag">MLX</span>
-                  </div>
-                  <div class="node-sub">macOS 15 · 128 GB Unified</div>
-                </button>
-                <div class="side-foot">
-                  <span>connect.rackdeck.dev</span>
-                  <span class="ok">Ed25519</span>
-                </div>
-              </aside>
-              <div class="app-main" id="app-main">
-                <!-- Populated by JS -->
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Stack Strip (t3.codes harness-grid inspired) -->
-    <section id="stack">
-      <div class="container">
-        <div class="section-head">
-          <span class="eyebrow">Bring your own hardware</span>
-          <h2>One control plane for mixed fleets.</h2>
-          <p>Cloud VMs, home GPU boxes, and Apple Silicon workstations all belong in the same clean dashboard — without reselling your VPS or locking you into an agent ecosystem.</p>
-        </div>
-
-        <div class="stack-grid" role="list">
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="7" rx="1.5"/><rect x="2" y="13" width="20" height="7" rx="1.5"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">Linux VPS</div>
-              <div class="stack-tag">Lightsail · Hetzner · DO</div>
-            </div>
-          </div>
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="0.8"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">NVIDIA GPUs</div>
-              <div class="stack-tag">nvidia-smi · ninfer · vLLM</div>
-            </div>
-          </div>
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">Apple Silicon</div>
-              <div class="stack-tag">MLX · Unified Memory</div>
-            </div>
-          </div>
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="10" width="4" height="3.5" rx="0.5"/><rect x="9" y="10" width="4" height="3.5" rx="0.5"/><rect x="15" y="10" width="4" height="3.5" rx="0.5"/><rect x="9" y="5.5" width="4" height="3.5" rx="0.5"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">Docker</div>
-              <div class="stack-tag">Deploy · Logs · Restart</div>
-            </div>
-          </div>
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="6" r="2" opacity="0.4"/><circle cx="12" cy="6" r="2"/><circle cx="18" cy="6" r="2" opacity="0.4"/><circle cx="6" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18" cy="12" r="2"/><circle cx="12" cy="18" r="2"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">Tailscale</div>
-              <div class="stack-tag">Auto-scan · QR pair</div>
-            </div>
-          </div>
-          <div class="stack-cell" role="listitem">
-            <div class="stack-icon">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7 3 12l5 5M16 7l5 5-5 5"/></svg>
-            </div>
-            <div class="stack-meta">
-              <div class="stack-name">Scoped MCP</div>
-              <div class="stack-tag">Read / Deploy · Audited</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="facts-strip">
-          <div class="tile fact-card">
-            <div class="fact-num">4.8 MB</div>
-            <p>Single compiled Rust binary with the React UI embedded via <code>rust-embed</code> and SQLite WAL bundled. No Node runtime, no Postgres sidecar.</p>
-          </div>
-          <div class="tile fact-card">
-            <div class="fact-num">Per-host GPU</div>
-            <p>Reads real VRAM, thermals, and power on NVIDIA boxes alongside Unified Memory pressure on Apple Silicon. Honest per-machine visibility — never fake VRAM pooling.</p>
-          </div>
-          <div class="tile fact-card">
-            <div class="fact-num">0 telemetry</div>
-            <p>No phone-home beacons, no forced cloud account, no hidden upsell banners. Run on localhost, LAN mDNS, or your own Tailnet forever.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Operations Split Section (t3.codes sec-git inspired) -->
-    <section id="operations">
-      <div class="container split-inner">
-        <div class="ops-visual">
-          <div class="tile deploy-card">
-            <div class="deploy-head">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
-              <div class="deploy-title">ninfer-qwen38 · home-rtx-5090</div>
-              <span class="deploy-status">Healthy</span>
-            </div>
-            <div class="deploy-meta">
-              <span>port :8080</span>
-              <span>VRAM 21.4 / 32 GB</span>
-              <span>64°C · 284 W</span>
-              <span>MCP: read-only</span>
-            </div>
-            <div class="deploy-rows">
-              <div><code>docker/caddy-edge</code><span class="ok">running · 14d</span></div>
-              <div><code>native/ninfer (Qwen3.8-27B)</code><span class="ok">173 tok/s</span></div>
-              <div><code>native/mlx_lm (mac-studio-m4)</code><span class="ok">31.6 tok/s</span></div>
-              <div><code>audit/mcp: node_health (claude-code)</code><span>2s ago</span></div>
-            </div>
-            <div class="deploy-foot">
-              <span>1 multiplexed WebSocket · /api/ws</span>
-              <span>No shell exposed to MCP</span>
-            </div>
-          </div>
-
-          <div class="trail" aria-hidden="true">
-            <span class="trail-dot"></span>
-            <span class="trail-line"></span>
-            <span class="trail-dot"></span>
-          </div>
-
-          <div class="pill-action-shell">
-            <span class="pill-action">
-              <span>Deploy app, tail logs, or switch host</span>
-              <kbd>⌘K</kbd>
+          <div class="hero-reassure">
+            <span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
+              No account needed
+            </span>
+            <span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
+              Works great with Tailscale &amp; local Wi-Fi
+            </span>
+            <span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
+              Zero tracking
             </span>
           </div>
         </div>
 
-        <div>
-          <div class="section-head" style="margin-bottom:0">
-            <span class="eyebrow">Operations</span>
-            <h2>Deploy containers, stream logs, open a shell.</h2>
-            <p>Everything you actually SSH into a box to do — surfaced over one multiplexed WebSocket with a clean keyboard-first command palette.</p>
+        <!-- Interactive Dashboard Preview -->
+        <div class="preview-shell">
+          <div class="preview-bar">
+            <div class="bar-left">
+              <div class="win-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+              <div class="bar-addr">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                <span>https://caleb.rackdev.app</span>
+              </div>
+            </div>
+            <div class="bar-status">
+              <span class="dot"></span>
+              <span>3 machines online · No open router ports</span>
+            </div>
           </div>
-          <ul class="checklist">
-            <li>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Deploy, start, stop, and restart Docker containers with live <code>docker logs -f</code> streaming.</span>
-            </li>
-            <li>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Auto-detects native local AI runners (<code>ninfer</code>, <code>mlx_lm</code>, <code>vllm</code>, <code>ollama</code>) alongside Docker workloads.</span>
-            </li>
-            <li>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Owner-only browser terminal authenticated via HttpOnly session — never exposed to MCP tokens.</span>
-            </li>
-            <li>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Scoped Streamable HTTP <code>/mcp</code> endpoint (<code>read</code> vs <code>deploy</code>) so coding agents can inspect health or logs safely, with every call logged.</span>
-            </li>
-          </ul>
+
+          <div class="preview-grid">
+            <aside class="preview-side" aria-label="Your machines">
+              <div class="side-title"><span>Your Machines</span><span>3 online</span></div>
+              <button type="button" class="machine-btn is-active" data-node="gpu">
+                <div class="machine-row">
+                  <span class="machine-name"><span class="dot"></span>home-rtx-5090</span>
+                  <span class="machine-kind">GPU PC</span>
+                </div>
+                <span class="machine-meta">Ubuntu · RTX 5090 (32 GB)</span>
+              </button>
+              <button type="button" class="machine-btn" data-node="mac">
+                <div class="machine-row">
+                  <span class="machine-name"><span class="dot"></span>mac-studio-m4</span>
+                  <span class="machine-kind">Mac</span>
+                </div>
+                <span class="machine-meta">macOS · 128 GB Unified</span>
+              </button>
+              <button type="button" class="machine-btn" data-node="vps">
+                <div class="machine-row">
+                  <span class="machine-name"><span class="dot"></span>cloud-vps-east</span>
+                  <span class="machine-kind">VPS</span>
+                </div>
+                <span class="machine-meta">Debian · 2 vCPU · 2 GB</span>
+              </button>
+              <div class="side-hint">
+                <span>Remote link</span>
+                <strong>Encrypted</strong>
+              </div>
+            </aside>
+            <div class="preview-main" id="preview-main"></div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Pricing & Two-Domain Connect -->
+    <!-- Hardware Section -->
+    <section id="hardware">
+      <div class="container">
+        <div class="sec-head">
+          <span class="sec-kicker">Made for real home &amp; cloud setups</span>
+          <h2>One view for the boxes you actually run.</h2>
+          <p>Most server panels assume you only own Linux cloud VMs. Rackdeck is built for people who also keep a desktop GPU rig under the desk or a Mac in the office.</p>
+        </div>
+
+        <div class="hw-grid">
+          <div class="card hw-card">
+            <div class="hw-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/></svg>
+            </div>
+            <h3>Home PC &amp; NVIDIA GPU rig</h3>
+            <p>Check CPU, RAM, storage, and real-time NVIDIA VRAM, temperature, and wattage right next to your Docker apps and local AI models.</p>
+            <div class="hw-tags">
+              <span>VRAM &amp; temps</span>
+              <span>ninfer · 173 tok/s</span>
+              <span>Ollama / vLLM</span>
+            </div>
+          </div>
+
+          <div class="card hw-card">
+            <div class="hw-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+            </div>
+            <h3>Apple Silicon Mac</h3>
+            <p>See unified memory usage, Metal activity, and running local models like MLX alongside Docker containers — without heavy background agents.</p>
+            <div class="hw-tags">
+              <span>Unified Memory</span>
+              <span>MLX</span>
+              <span>Local Wi-Fi</span>
+            </div>
+          </div>
+
+          <div class="card hw-card">
+            <div class="hw-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="7" rx="1.5"/><rect x="2" y="13" width="20" height="7" rx="1.5"/><circle cx="6" cy="7.5" r="1" fill="currentColor"/><circle cx="6" cy="16.5" r="1" fill="currentColor"/></svg>
+            </div>
+            <h3>Cloud VPS &amp; mini PCs</h3>
+            <p>Keep your $5–$10 Lightsail, Hetzner, or closet mini PC right alongside your home hardware. Restart a stuck app in two clicks instead of hunting for IP addresses.</p>
+            <div class="hw-tags">
+              <span>Docker</span>
+              <span>Live Logs</span>
+              <span>4.8 MB binary</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features Bento -->
+    <section id="features">
+      <div class="container">
+        <div class="sec-head">
+          <span class="sec-kicker">Simple day-to-day control</span>
+          <h2>Everything you open SSH for, made effortless.</h2>
+          <p>Fast, clean, and respectful of your hardware. No bloated web stacks, no confusing firewall rules, and no babysitting a separate database.</p>
+        </div>
+
+        <div class="bento-grid">
+          <div class="card bento-card">
+            <div class="bento-top">
+              <h3>Manage Docker apps &amp; live logs</h3>
+              <span class="bento-pill">One click</span>
+            </div>
+            <p>Launch new Docker containers, restart anything that freezes, and watch real-time logs stream straight into your browser — from your desk or your phone.</p>
+            <div class="bento-mini">
+              <span><strong>open-webui</strong> · port :3000 · 1.4 GB RAM</span>
+              <span class="ok">● Running</span>
+            </div>
+          </div>
+
+          <div class="card bento-card">
+            <div class="bento-top">
+              <h3>Reach home safely without router ports</h3>
+              <span class="bento-pill">Zero port forwarding</span>
+            </div>
+            <p>Use Rackdeck free on home Wi-Fi or over Tailscale. Want a clean HTTPS address that works from any phone or laptop with zero network setup? Flip on optional Connect for <code>yourname.rackdev.app</code>.</p>
+            <div class="bento-mini">
+              <span><strong>https://caleb.rackdev.app</strong> · Auto HTTPS</span>
+              <span class="ok">Outbound tunnel</span>
+            </div>
+          </div>
+
+          <div class="card bento-card">
+            <div class="bento-top">
+              <h3>Pair a phone or add a box in seconds</h3>
+              <span class="bento-pill">QR &amp; Tailscale scan</span>
+            </div>
+            <p>Rackdeck automatically spots your local and Tailscale machines. Linking another PC takes one pasteable join command, and pairing your phone takes a quick 60-second QR scan.</p>
+            <div class="bento-mini">
+              <span><strong>rackdeck agent join</strong> · 15m one-time token</span>
+              <span class="ok">Verified key</span>
+            </div>
+          </div>
+
+          <div class="card bento-card">
+            <div class="bento-top">
+              <h3>Browser terminal &amp; safe AI helper access</h3>
+              <span class="bento-pill">Locked down</span>
+            </div>
+            <p>Need a real command line? Open the built-in browser terminal (locked strictly to your login). Want Claude or Codex to check why a container crashed? Give it a read-only MCP token — AI tools can never open a shell.</p>
+            <div class="bento-mini">
+              <span><strong>mcp[read]</strong> · node_health, logs_tail</span>
+              <span class="ok">No shell access</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3-Step Setup -->
+    <section id="setup">
+      <div class="container">
+        <div class="sec-head">
+          <span class="sec-kicker">30-second install</span>
+          <h2>One tiny file. Nothing else to maintain.</h2>
+          <p>Rackdeck compiles the server, web dashboard, and local SQLite database into one 4.8&nbsp;MB Rust binary. Install it once and you're done.</p>
+        </div>
+
+        <div class="steps-grid">
+          <div class="card step-card">
+            <div class="step-num">1</div>
+            <h3>Install Rackdeck</h3>
+            <p>Run the one-line installer on Linux or macOS. No Node.js, no Python venv, and no external Postgres container to keep alive.</p>
+          </div>
+          <div class="card step-card">
+            <div class="step-num">2</div>
+            <h3>Open the dashboard</h3>
+            <p>Start the server with your password and open it in your browser. Local containers, GPUs, and Tailscale peers show up right away.</p>
+          </div>
+          <div class="card step-card">
+            <div class="step-num">3</div>
+            <h3>Link your other machines</h3>
+            <p>Paste a single join command on your GPU rig, Mac, or VPS — or toggle Connect to reach everything securely from anywhere.</p>
+          </div>
+        </div>
+
+        <div class="card term-card">
+          <div class="term-head">
+            <span>Quick start · Linux &amp; macOS</span>
+            <button type="button" class="term-copy" data-copy="curl -fsSL https://get.rackdeck.dev | sh">Copy installer</button>
+          </div>
+          <div class="term-body">
+            <div class="term-line"><span class="p">$</span>curl -fsSL https://get.rackdeck.dev | sh</div>
+            <div class="term-line dim">  installed /usr/local/bin/rackdeck (4.8 MB · v0.1.0)</div>
+            <div class="term-line" style="margin-top:8px"><span class="p">$</span>RACKDECK_PASSWORD=your-password rackdeck serve</div>
+            <div class="term-line ok">  ✓ Dashboard ready at http://127.0.0.1:7337 (found 2 Tailscale peers)</div>
+            <div class="term-line" style="margin-top:8px"><span class="p">$</span>rackdeck agent join --hub https://caleb.rackdev.app --token rdj_9f2a…</div>
+            <div class="term-line ok">  ✓ home-rtx-5090 linked (RTX 5090 · 32 GB VRAM · ninfer 173 tok/s)</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Pricing -->
     <section id="pricing">
       <div class="container">
-        <div class="section-head centered">
-          <span class="eyebrow">Home Assistant business model</span>
-          <h2>Free on your network.<br />$9/mo for zero-config HTTPS.</h2>
-          <p>The entire panel and relay are Apache-2.0. Pay only if you want us to run the global Connect relay or a managed control plane so you never touch router ports or DNS.</p>
+        <div class="sec-head">
+          <span class="sec-kicker">Simple, fair pricing</span>
+          <h2>Free on your network. Pay only if you want us to host the bridge.</h2>
+          <p>Inspired by Home Assistant: the full open-source app is free forever. Optional paid plans cover the server costs of running a fast remote bridge or hosted hub for you.</p>
         </div>
 
         <div class="pricing-grid">
-          <div class="tile price-card">
-            <div class="price-top">
-              <span class="price-name">Self-Hosted Core</span>
-              <span class="price-badge">Apache-2.0</span>
+          <div class="card price-card">
+            <div class="price-head">
+              <span class="price-name">Self-Hosted</span>
+              <span class="price-tag">Apache-2.0</span>
             </div>
-            <div class="price-amount">
+            <div class="price-num">
               <strong>$0</strong>
               <span>/ forever</span>
             </div>
-            <p class="price-desc">Run on your own VPS, homelab, or Mac. Unlimited machines over LAN, Tailscale, or WireGuard.</p>
+            <p class="price-desc">Run on your own PC, Mac, or VPS over home Wi-Fi, Tailscale, or WireGuard.</p>
             <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>4.8 MB <code>rackdeck</code> + 3.5 MB <code>rackdeck-relay</code></span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Unlimited Linux, NVIDIA GPU, and macOS nodes</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Docker deploys, live logs, browser shell, MCP</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>60-second Ed25519 QR pairing &amp; Tailnet auto-scan</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Unlimited machines &amp; Docker apps</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>NVIDIA GPU &amp; Apple Silicon live stats</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Live logs, browser shell, QR pairing &amp; MCP</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hostable relay included if you want it</span></li>
             </ul>
-            <a class="btn btn-ghost" href="#open-source">Install locally</a>
+            <a class="btn btn-ghost" href="#setup">Get started free</a>
           </div>
 
-          <div class="tile price-card is-featured">
-            <div class="price-top">
+          <div class="card price-card featured">
+            <div class="price-head">
               <span class="price-name">Rackdeck Connect</span>
-              <span class="price-badge">Zero router ports</span>
+              <span class="price-tag">Easiest remote access</span>
             </div>
-            <div class="price-amount">
+            <div class="price-num">
               <strong>$9</strong>
               <span>/ month</span>
             </div>
-            <p class="price-desc">Managed outbound Ed25519 relay with instant wildcard HTTPS on an isolated customer domain.</p>
+            <p class="price-desc">Secure HTTPS access from your phone or laptop anywhere — zero router setup.</p>
             <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Dedicated <code>your-slug.rackdev.app</code> auto-TLS URL</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Two-domain origin &amp; cookie isolation from <code>rackdeck.dev</code></span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Outbound Ed25519 challenge-response + TOFU pinning</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Works behind CGNAT &amp; home routers; cancel anytime</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Your own <code>yourname.rackdev.app</code> HTTPS link</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Works behind any home router or CGNAT</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Cryptographic key auth &amp; isolated domain</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Turn on or cancel in one click inside the app</span></li>
             </ul>
-            <a class="btn btn-primary" href="https://github.com/ctsoftwarellc/rackdeck#rackdeck-connect" target="_blank" rel="noopener noreferrer">Enable inside Rackdeck</a>
+            <a class="btn btn-primary" href="https://github.com/ctsoftwarellc/rackdeck#rackdeck-connect" target="_blank" rel="noopener noreferrer">Turn on in Rackdeck</a>
           </div>
 
-          <div class="tile price-card">
-            <div class="price-top">
+          <div class="card price-card">
+            <div class="price-head">
               <span class="price-name">Rackdeck Cloud</span>
-              <span class="price-badge">Managed hub</span>
+              <span class="price-tag">Hosted hub</span>
             </div>
-            <div class="price-amount">
+            <div class="price-num">
               <strong>$19</strong>
               <span>/ month</span>
             </div>
-            <p class="price-desc">Hosted control plane at <code>app.rackdeck.dev</code> so you only install lightweight agents on your boxes.</p>
+            <p class="price-desc">We host the main control panel for you at <code>app.rackdeck.dev</code> with encrypted backups.</p>
             <ul class="price-list">
               <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Everything in Rackdeck Connect included</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Managed control plane + encrypted Litestream S3 backups</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Connect your existing AWS, Hetzner, or home nodes</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Zero VPS markup — keep your own cloud accounts</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Automatic encrypted database backups</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Connect your own home PCs, Macs &amp; VPSs</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Keep your own cloud bills — zero VPS markup</span></li>
             </ul>
             <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Request early access</a>
           </div>
         </div>
 
-        <div class="tile compare-box">
-          <div>
-            <span class="eyebrow">Honest comparison</span>
-            <h3>Why not Coolify or Portainer?</h3>
-          </div>
+        <div class="card compare-note">
           <p>
-            <strong>Coolify</strong> has a mature 300+ one-click Compose app catalog — if you want a self-hosted Heroku/Vercel PaaS, Coolify is great.
-            <strong>Rackdeck</strong> is a 4.8&nbsp;MB native Rust binary built for developers running a <em>mixed</em> fleet: a cheap cloud VPS, a home NVIDIA GPU box running <code>ninfer</code> or <code>vLLM</code>, and an Apple Silicon Mac running <code>MLX</code> — all in one fast panel with Tailscale discovery, optional zero-port Connect, and scoped MCP.
+            <strong>Already considering Coolify or Portainer?</strong> Coolify is awesome if you want a full Heroku-style web deployer with 300+ one-click templates. Rackdeck is a much lighter 4.8&nbsp;MB native app built for people who want one clean, secure place to manage a mixed setup — a home GPU PC, a Mac, and a cloud box or two — without installing a heavy platform.
           </p>
         </div>
       </div>
     </section>
 
-    <!-- Open Source & Terminal (t3.codes sec-open inspired) -->
-    <section id="open-source">
+    <!-- FAQ -->
+    <section id="faq">
       <div class="container">
-        <div class="section-head centered">
-          <span class="eyebrow">Open source · Apache-2.0</span>
-          <h2>If you don't like something, fork it.</h2>
-          <p>Nine clean hexagonal Rust crates, embedded React 19 UI, bundled SQLite WAL. Inspect every line, build from source, or run your own relay.</p>
+        <div class="sec-head">
+          <span class="sec-kicker">Straight answers</span>
+          <h2>Common questions.</h2>
         </div>
 
-        <div class="open-grid">
-          <div class="tile open-term">
-            <div class="open-term-head">
-              <i></i><i></i><i></i>
-              <span class="open-term-title">rackdeck — zsh</span>
-              <button type="button" class="open-term-copy" data-copy="curl -fsSL https://get.rackdeck.dev | sh">Copy</button>
-            </div>
-            <div class="open-term-body">
-              <div class="cmd-row"><span class="prompt">$</span>curl -fsSL https://get.rackdeck.dev | sh</div>
-              <div class="cmd-row dim">  installed /usr/local/bin/rackdeck (4.8 MB · v0.1.0)</div>
-              <div class="cmd-row" style="margin-top:10px"><span class="prompt">$</span>RACKDECK_PASSWORD=changeme rackdeck serve</div>
-              <div class="cmd-row ok">  ✓ control plane listening on http://127.0.0.1:7337</div>
-              <div class="cmd-row dim">  ✓ discovered 2 tailscale peers · Ed25519 key ready</div>
-              <div class="cmd-row" style="margin-top:10px"><span class="prompt">$</span>rackdeck agent join --hub https://caleb.rackdev.app --token rdj_9f2a…</div>
-              <div class="cmd-row ok">  ✓ home-rtx-5090 online (NVIDIA RTX 5090 · 32 GB VRAM)</div>
-              <div class="cmd-row" style="margin-top:10px"><span class="prompt">$</span><span class="caret" aria-hidden="true"></span></div>
-            </div>
-          </div>
-
-          <div class="tile faq-tile">
-            <details class="faq-item" open>
-              <summary>Why two domains (rackdeck.dev vs *.rackdev.app)?</summary>
-              <p>Customer tunnel traffic lives on <code>*.rackdev.app</code> while the brand, installer, and control plane live on <code>rackdeck.dev</code>. That isolates browser origins and cookies so no tenant subdomain can ever touch <code>rackdeck.dev</code>.</p>
-            </details>
-            <details class="faq-item">
-              <summary>Does Rackdeck pool VRAM across my Mac and NVIDIA rig?</summary>
-              <p>No. GPU VRAM and Apple Silicon unified memory are reported accurately per host. Rackdeck gives you unified visibility and control over both machines, not distributed tensor sharding.</p>
-            </details>
-            <details class="faq-item">
-              <summary>Can an AI agent connected over MCP open a shell?</summary>
-              <p>Never. The browser terminal is owner-session only. MCP tokens are explicitly scoped to <code>read</code> (health, containers, log tail) or <code>deploy</code> (container actions), and every call writes to the local audit trail.</p>
-            </details>
-            <details class="faq-item">
-              <summary>Can I self-host the Connect relay too?</summary>
-              <p>Yes. <code>rackdeck-relay</code> (3.5&nbsp;MB) is in the same Apache-2.0 repository alongside Caddy and systemd configs for any $7/mo VPS.</p>
-            </details>
-          </div>
+        <div class="faq-list">
+          <details class="card faq-item" open>
+            <summary>Do I have to open ports on my home router?</summary>
+            <p>Never. On home Wi-Fi or Tailscale, Rackdeck stays completely private on your network. If you use Rackdeck Connect, your machine makes a secure outbound connection so your router firewall stays closed.</p>
+          </details>
+          <details class="card faq-item" open>
+            <summary>Why are remote links on *.rackdev.app instead of rackdeck.dev?</summary>
+            <p>Security isolation. Keeping personal dashboards on a separate domain (<code>yourname.rackdev.app</code>) prevents browser cookies and sessions from ever crossing over with <code>rackdeck.dev</code>.</p>
+          </details>
+          <details class="card faq-item">
+            <summary>Does it combine my Mac and NVIDIA GPU memory into one GPU?</summary>
+            <p>No — each machine reports its own NVIDIA VRAM or Apple Silicon unified memory accurately. Rackdeck lets you see and manage both in one clean place rather than faking pooled memory.</p>
+          </details>
+          <details class="card faq-item">
+            <summary>Is it really open source, and does it phone home?</summary>
+            <p>Yes. The entire control panel and Connect relay are Apache-2.0 on GitHub with zero product telemetry. If you don't turn on Connect, Rackdeck never contacts our servers at all.</p>
+          </details>
         </div>
       </div>
     </section>
 
-    <!-- Final CTA -->
-    <section class="sec-cta">
+    <!-- Closing CTA -->
+    <section style="padding: 60px 0 76px;">
       <div class="container">
-        <h2 class="display">Your servers deserve better than five SSH tabs.</h2>
-        <p>One 4.8&nbsp;MB binary. Apache-2.0. Running on your first machine in thirty seconds.</p>
-        <div class="cta-buttons">
-          <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
-            <span class="btn-label">Copy install command</span>
-          </button>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.94c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.22 10.22 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
-            <span>View on GitHub</span>
-          </a>
+        <div class="card cta-box">
+          <div>
+            <h2>Ready to clean up your setup?</h2>
+            <p>Free forever on your own network. One 4.8&nbsp;MB binary, running in 30 seconds.</p>
+          </div>
+          <div class="cta-actions">
+            <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
+              <span class="btn-label">Copy install command</span>
+            </button>
+            <a class="btn btn-ghost btn-lg" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
+              Browse on GitHub
+            </a>
+          </div>
         </div>
       </div>
     </section>
@@ -1727,7 +1295,7 @@
 
   <footer class="footer">
     <div class="container footer-inner">
-      <div>© 2026 CT Software LLC · Rackdeck is open source under Apache-2.0.</div>
+      <div>© 2026 CT Software LLC · Open source under Apache-2.0.</div>
       <div class="footer-links">
         <a href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">GitHub</a>
         <a href="https://github.com/ctsoftwarellc/rackdeck/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">Architecture</a>
@@ -1740,20 +1308,14 @@
 
 <script>
 (function () {
-  // Sticky nav border on scroll
-  const nav = document.getElementById("nav");
-  const syncNav = () => nav.classList.toggle("is-scrolled", window.scrollY > 8);
-  window.addEventListener("scroll", syncNav, { passive: true });
-  syncNav();
-
-  // Theme toggle (dark default matching T3 Code, optional light mode)
+  // Theme toggle
   const root = document.documentElement;
   const sun = document.getElementById("icon-sun");
   const moon = document.getElementById("icon-moon");
-  const applyTheme = (theme) => {
-    root.setAttribute("data-theme", theme);
-    sun.style.display = theme === "dark" ? "block" : "none";
-    moon.style.display = theme === "light" ? "block" : "none";
+  const applyTheme = (t) => {
+    root.setAttribute("data-theme", t);
+    sun.style.display = t === "dark" ? "block" : "none";
+    moon.style.display = t === "light" ? "block" : "none";
   };
   try {
     const saved = localStorage.getItem("rackdeck-theme");
@@ -1765,17 +1327,6 @@
     try { localStorage.setItem("rackdeck-theme", next); } catch (_) {}
   });
 
-  // Subtle hero float parallax on desktop
-  const floatLayer = document.getElementById("hero-float");
-  if (floatLayer && window.matchMedia("(pointer: fine)").matches && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    window.addEventListener("mousemove", (e) => {
-      const rx = (e.clientX / window.innerWidth - 0.5) * 16;
-      const ry = (e.clientY / window.innerHeight - 0.5) * 12;
-      floatLayer.style.setProperty("--px", rx.toFixed(1) + "px");
-      floatLayer.style.setProperty("--py", ry.toFixed(1) + "px");
-    }, { passive: true });
-  }
-
   // Copy buttons
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1783,157 +1334,146 @@
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).catch(() => {});
       }
-      const tag = btn.querySelector(".copy-tag") || btn.querySelector(".btn-label") || btn;
-      const orig = tag.textContent;
-      tag.textContent = "Copied!";
-      if (tag.classList) tag.classList.add("copied");
+      const target = btn.querySelector(".cmd-copy") || btn.querySelector(".btn-label") || btn;
+      const orig = target.textContent;
+      target.textContent = "Copied!";
+      if (target.classList) target.classList.add("copied");
       clearTimeout(btn._t);
       btn._t = setTimeout(() => {
-        tag.textContent = orig;
-        if (tag.classList) tag.classList.remove("copied");
-      }, 1600);
+        target.textContent = orig;
+        if (target.classList) target.classList.remove("copied");
+      }, 1500);
     });
   });
 
-  // Interactive Hero Rackdeck UI Showcase
+  // Interactive Dashboard Showcase
   const NODES = {
     gpu: {
       name: "home-rtx-5090",
-      ip: "100.94.12.8 · tailscale · Ubuntu 24.04",
-      kpis: [
+      sub: "Home Wi-Fi / Tailscale · Ubuntu 24.04 · 100.94.12.8",
+      stats: [
         { label: "CPU", val: "18%", sub: "Ryzen 9 9950X", pct: 18, ok: false },
-        { label: "RAM", val: "29 / 64 GB", sub: "45% used", pct: 45, ok: false },
-        { label: "VRAM · RTX 5090", val: "21.4 / 32 GB", sub: "64°C · 284 W", pct: 67, ok: true },
-        { label: "Net ↓ / ↑", val: "14 / 82 Mbps", sub: "Connect healthy", pct: 32, ok: true }
+        { label: "Memory", val: "29 / 64 GB", sub: "45% used", pct: 45, ok: false },
+        { label: "GPU · RTX 5090", val: "21.4 / 32 GB", sub: "64°C · 284 W", pct: 67, ok: true },
+        { label: "Network", val: "14 ↓ / 82 ↑", sub: "Mbps · Encrypted", pct: 32, ok: true }
       ],
-      workloads: [
-        { name: "ninfer (Qwen3.8-27B)", kind: "native · :8080", status: "running", detail: "173 tok/s" },
-        { name: "open-webui", kind: "docker · :3000", status: "running", detail: "1.4 GB RAM" },
-        { name: "caddy-local", kind: "docker · :443", status: "running", detail: "up 19d" }
-      ],
-      logs: [
-        ["20:54:11", "INFO", "ninfer: loaded Qwen3.8-27B-Q4_K_M on CUDA:0 (21.4 GB VRAM)"],
-        ["20:54:14", "INFO", "rackdeck-node: nvidia-smi poll ok (64°C, 284W, fan 42%)"],
-        ["20:54:19", "AUDIT", "mcp[read] claude-code -> node_health(home-rtx-5090) 200 OK"],
-        ["20:54:26", "INFO", "connect: Ed25519 keepalive ack from connect.rackdeck.dev (18ms)"]
-      ]
-    },
-    vps: {
-      name: "aws-lightsail-east",
-      ip: "100.94.12.2 · us-east-1 · Debian 12",
-      kpis: [
-        { label: "CPU", val: "7%", sub: "2 vCPU · 0.14 load", pct: 7, ok: true },
-        { label: "RAM", val: "412 MB / 2 GB", sub: "21% used", pct: 21, ok: true },
-        { label: "Disk NVMe", val: "14 / 60 GB", sub: "SQLite WAL 6 MB", pct: 23, ok: false },
-        { label: "Transfer", val: "118 GB / 2 TB", sub: "Lightsail $7 bundle", pct: 6, ok: true }
-      ],
-      workloads: [
-        { name: "caddy-edge", kind: "docker · :443", status: "running", detail: "Auto TLS" },
-        { name: "rackdeck-relay", kind: "systemd · :8443", status: "running", detail: "3.5 MB RSS" },
-        { name: "litestream-s3", kind: "systemd · s3", status: "running", detail: "synced 12s" }
+      apps: [
+        { name: "ninfer (Qwen3.8-27B)", type: "local model · :8080", status: "Running", note: "173 tok/s" },
+        { name: "open-webui", type: "docker · :3000", status: "Running", note: "1.4 GB RAM" },
+        { name: "immich-server", type: "docker · :2283", status: "Running", note: "up 19 days" }
       ],
       logs: [
-        ["20:53:40", "INFO", "caddy: TLS cert valid for *.rackdev.app (84 days left)"],
-        ["20:53:58", "INFO", "rackdeck-relay: tunnel session verified (caleb.rackdev.app)"],
-        ["20:54:05", "INFO", "litestream: WAL snapshot replicated to s3://rackdeck-backups"],
-        ["20:54:21", "AUDIT", "mcp[deploy] codex -> app_action(caddy-edge, restart) 200 OK"]
+        ["20:54:11", "OK", "ninfer ready: Qwen3.8-27B on RTX 5090 (21.4 GB VRAM · 173 tok/s)"],
+        ["20:54:14", "OK", "GPU check: 64°C, 284W, fan 42% — thermals normal"],
+        ["20:54:19", "OK", "Secure remote link active (caleb.rackdev.app · 18ms)"],
+        ["20:54:25", "AUDIT", "Read-only MCP check from Claude Code: home-rtx-5090 healthy"]
       ]
     },
     mac: {
       name: "mac-studio-m4",
-      ip: "100.94.12.19 · LAN mDNS · macOS 15",
-      kpis: [
-        { label: "CPU", val: "12%", sub: "M4 Max · 16-core", pct: 12, ok: true },
-        { label: "Unified Mem", val: "54 / 128 GB", sub: "Wired 38 GB · MLX", pct: 42, ok: true },
-        { label: "GPU Metal", val: "61%", sub: "Thermal: nominal", pct: 61, ok: false },
-        { label: "Net ↓ / ↑", val: "4 / 19 Mbps", sub: "LAN 10GbE", pct: 15, ok: true }
+      sub: "Home Office · macOS 15 · 100.94.12.19",
+      stats: [
+        { label: "CPU", val: "12%", sub: "Apple M4 Max", pct: 12, ok: true },
+        { label: "Unified Memory", val: "54 / 128 GB", sub: "42% used", pct: 42, ok: true },
+        { label: "GPU Metal", val: "61%", sub: "Thermals normal", pct: 61, ok: false },
+        { label: "Network", val: "4 ↓ / 19 ↑", sub: "Mbps · 10GbE LAN", pct: 16, ok: true }
       ],
-      workloads: [
-        { name: "mlx_lm.server", kind: "native · :8090", status: "running", detail: "Qwen3.8-Flash" },
-        { name: "orbstack-postgres", kind: "docker · :5432", status: "running", detail: "312 MB" },
-        { name: "rackdeck-agent", kind: "launchd · local", status: "running", detail: "4.8 MB bin" }
+      apps: [
+        { name: "mlx_lm (Qwen3.8-Flash)", type: "local model · :8090", status: "Running", note: "31.6 tok/s" },
+        { name: "postgres-local", type: "docker · :5432", status: "Running", note: "312 MB RAM" },
+        { name: "rackdeck-agent", type: "background · 4.8 MB", status: "Running", note: "up 12 days" }
       ],
       logs: [
-        ["20:54:02", "INFO", "mlx_lm.server: serving Qwen3.8-Flash-Next (31.6 tok/s Metal)"],
-        ["20:54:09", "INFO", "rackdeck-node: Apple Silicon unified mem 54.1 / 128.0 GB"],
-        ["20:54:15", "INFO", "discovery: mDNS beacon active on local. (no port open)"],
-        ["20:54:28", "AUDIT", "mcp[read] antigravity -> container_logs_tail(mlx_lm) 200 OK"]
+        ["20:54:02", "OK", "mlx_lm serving Qwen3.8-Flash-Next (31.6 tok/s on Metal)"],
+        ["20:54:09", "OK", "Unified Memory: 54.1 / 128 GB · pressure normal"],
+        ["20:54:16", "OK", "Discovered automatically on local Wi-Fi (no ports opened)"]
+      ]
+    },
+    vps: {
+      name: "cloud-vps-east",
+      sub: "AWS Lightsail · Debian 12 · 100.94.12.2",
+      stats: [
+        { label: "CPU", val: "7%", sub: "2 vCPU · calm", pct: 7, ok: true },
+        { label: "Memory", val: "412 MB / 2 GB", sub: "21% used", pct: 21, ok: true },
+        { label: "Storage", val: "14 / 60 GB", sub: "NVMe SSD", pct: 23, ok: false },
+        { label: "Bandwidth", val: "118 GB / 2 TB", sub: "Monthly bundle", pct: 6, ok: true }
+      ],
+      apps: [
+        { name: "caddy-proxy", type: "docker · :443", status: "Running", note: "Auto HTTPS" },
+        { name: "uptime-kuma", type: "docker · :3001", status: "Running", note: "99.98% up" },
+        { name: "vaultwarden", type: "docker · :8000", status: "Running", note: "up 34 days" }
+      ],
+      logs: [
+        ["20:53:40", "OK", "caddy: HTTPS certificates renewed and healthy"],
+        ["20:53:58", "OK", "uptime-kuma: all 11 personal services responding"],
+        ["20:54:12", "OK", "Encrypted backup synced cleanly"]
       ]
     }
   };
 
   let activeNode = "gpu";
-  let activeTab = "workloads";
-  const mainEl = document.getElementById("app-main");
+  let activeTab = "apps";
+  const mainEl = document.getElementById("preview-main");
 
-  function renderApp() {
+  function render() {
     const n = NODES[activeNode];
-    const kpiHtml = n.kpis.map((k) => `
-      <div class="kpi">
-        <div class="kpi-label">${k.label}</div>
-        <div class="kpi-val">${k.val}</div>
-        <div class="kpi-sub">${k.sub}</div>
-        <div class="meter ${k.ok ? "ok" : ""}"><span style="width:${k.pct}%"></span></div>
+    const statsHtml = n.stats.map((s) => `
+      <div class="stat">
+        <div class="stat-label">${s.label}</div>
+        <div class="stat-val">${s.val}</div>
+        <div class="stat-sub">${s.sub}</div>
+        <div class="bar-track ${s.ok ? "ok" : ""}"><span style="width:${s.pct}%"></span></div>
       </div>
     `).join("");
 
-    let bodyHtml = "";
-    if (activeTab === "workloads") {
-      bodyHtml = `
-        <div class="app-table">
-          <div class="app-table-row is-head">
-            <span>Workload</span><span>Runtime</span><span>Status</span><span>Telemetry</span>
-          </div>
-          ${n.workloads.map((w) => `
-            <div class="app-table-row">
-              <strong>${w.name}</strong>
-              <code>${w.kind}</code>
-              <span class="pill-ok">${w.status}</span>
-              <code>${w.detail}</code>
+    const bodyHtml = activeTab === "apps"
+      ? `<div class="app-list">
+          <div class="app-row is-head"><span>App</span><span>Type</span><span>Status</span><span>Activity</span></div>
+          ${n.apps.map((a) => `
+            <div class="app-row">
+              <strong>${a.name}</strong>
+              <code>${a.type}</code>
+              <span class="badge-run">${a.status}</span>
+              <code>${a.note}</code>
             </div>
           `).join("")}
-        </div>
-      `;
-    } else {
-      bodyHtml = `
-        <div class="app-logs">
-          ${n.logs.map((l) => `<div><span class="ts">${l[0]}</span><span class="lvl">${l[1]}</span><span class="hi">${l[2]}</span></div>`).join("")}
-        </div>
-      `;
-    }
+        </div>`
+      : `<div class="log-box">
+          ${n.logs.map((l) => `<div><span class="ts">${l[0]}</span><span class="ok">${l[1]}</span><span class="msg">${l[2]}</span></div>`).join("")}
+        </div>`;
 
     mainEl.innerHTML = `
-      <div class="app-head">
-        <div class="app-node-title">
+      <div class="pm-head">
+        <div class="pm-title">
           <h3>${n.name}</h3>
-          <span class="app-node-ip">${n.ip}</span>
+          <p>${n.sub}</p>
         </div>
-        <div class="app-tabs" role="tablist">
-          <button type="button" class="app-tab ${activeTab === "workloads" ? "is-active" : ""}" data-tab="workloads">Containers &amp; Runners</button>
-          <button type="button" class="app-tab ${activeTab === "logs" ? "is-active" : ""}" data-tab="logs">Live Logs &amp; Audit</button>
+        <div class="pm-tabs" role="tablist">
+          <button type="button" class="pm-tab ${activeTab === "apps" ? "is-active" : ""}" data-tab="apps">Apps &amp; Models</button>
+          <button type="button" class="pm-tab ${activeTab === "logs" ? "is-active" : ""}" data-tab="logs">Live Logs</button>
         </div>
       </div>
-      <div class="kpi-row">${kpiHtml}</div>
+      <div class="stat-row">${statsHtml}</div>
       ${bodyHtml}
     `;
 
     mainEl.querySelectorAll("[data-tab]").forEach((t) => {
       t.addEventListener("click", () => {
         activeTab = t.getAttribute("data-tab");
-        renderApp();
+        render();
       });
     });
   }
 
-  document.querySelectorAll("[data-node]").forEach((el) => {
-    el.addEventListener("click", () => {
-      activeNode = el.getAttribute("data-node");
-      document.querySelectorAll("[data-node]").forEach((x) => x.classList.toggle("is-active", x === el));
-      renderApp();
+  document.querySelectorAll("[data-node]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      activeNode = btn.getAttribute("data-node");
+      document.querySelectorAll("[data-node]").forEach((b) => b.classList.toggle("is-active", b === btn));
+      render();
     });
   });
 
-  renderApp();
+  render();
 })();
 </script>
 </body>

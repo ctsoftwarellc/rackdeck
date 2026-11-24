@@ -13,7 +13,10 @@ use sysinfo::{Disks, Networks, System};
 use tokio::process::Command;
 
 mod docker_apps;
-use docker_apps::{container_args, docker, pull_image, remove_container, update_container, UpdateChecks};
+use docker_apps::{
+    anonymous_volumes, container_args, container_details, docker, pull_image, remove_container,
+    require_new_volume, update_container, UpdateChecks,
+};
 
 pub struct LocalNodeAdapter {
     node_id: String,
@@ -27,6 +30,15 @@ pub struct LocalNodeAdapter {
 }
 
 impl LocalNodeAdapter {
+    pub fn try_app_operation(&self) -> CoreResult<tokio::sync::MutexGuard<'_, ()>> {
+        self.app_operation.try_lock().map_err(|_| {
+            CoreError::Runtime(
+                "Another app change is in progress on this machine. Try again when it finishes."
+                    .into(),
+            )
+        })
+    }
+
     pub fn new(port: u16) -> Self {
         let host = System::host_name().unwrap_or_else(|| "rackdeck-node".into());
         let slug: String = host
@@ -173,7 +185,10 @@ async fn preflight(spec: &DeploySpec) -> Result<(), CoreError> {
         }
     }
     // Only a new download needs space; an image already on the machine doesn't.
-    if run_cmd("docker", &["image", "inspect", &spec.image]).await.is_none() {
+    if run_cmd("docker", &["image", "inspect", "--", &spec.image])
+        .await
+        .is_none()
+    {
         // ponytail: checks the host's / (Docker's usual home on Linux); Docker Desktop's VM disk isn't seen.
         let free_gb = run_cmd("df", &["-Pk", "/"])
             .await
@@ -424,7 +439,7 @@ impl NodeOps for LocalNodeAdapter {
             version: env!("CARGO_PKG_VERSION").to_string(),
             lan_ip: detect_lan_ip(),
             tailscale_ip,
-            connect_slug: Some(self.callsign.to_lowercase()),
+            connect_slug: None,
             connect_enabled: false,
         })
     }
@@ -470,6 +485,7 @@ impl NodeOps for LocalNodeAdapter {
                         state,
                         can_update: Some(spec.is_some()),
                         update_available: false,
+                        storage: None,
                         ports: spec.and_then(|spec| spec.host_port).into_iter().collect(),
                         domains: vec![],
                         usage: AppUsage {
@@ -482,9 +498,24 @@ impl NodeOps for LocalNodeAdapter {
                 }
             }
         }
-        let outdated = self.update_checks.outdated_containers(update_candidates);
-        for app in &mut apps {
-            app.update_available = app.id.strip_prefix("docker:").is_some_and(|id| outdated.contains(id));
+        let ids: Vec<_> = apps
+            .iter()
+            .filter_map(|app| app.id.strip_prefix("docker:"))
+            .collect();
+        if !ids.is_empty() {
+            let (details, anonymous) = tokio::join!(container_details(&ids), anonymous_volumes());
+            let outdated = self
+                .update_checks
+                .outdated_containers(update_candidates, &details)
+                .await;
+            for app in &mut apps {
+                if let Some(id) = app.id.strip_prefix("docker:") {
+                    app.update_available = outdated.contains(id);
+                    app.storage = details
+                        .get(id)
+                        .and_then(|info| info.storage(anonymous.as_ref()));
+                }
+            }
         }
 
         // 2. Native local AI runners (ninfer, mlx_lm, vllm, ollama)
@@ -508,6 +539,7 @@ impl NodeOps for LocalNodeAdapter {
                         state: AppState::Running,
                         can_update: None,
                         update_available: false,
+                        storage: None,
                         ports: vec![port],
                         domains: vec![],
                         usage: AppUsage {
@@ -535,6 +567,7 @@ impl NodeOps for LocalNodeAdapter {
                 state: AppState::Running,
                 can_update: None,
                 update_available: false,
+                storage: None,
                 ports: vec![self.port],
                 domains: vec![],
                 usage: AppUsage {
@@ -552,9 +585,7 @@ impl NodeOps for LocalNodeAdapter {
     async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<AppActionResult> {
         let container_id = app_id.strip_prefix("docker:").filter(|id| !id.is_empty())
             .ok_or_else(|| CoreError::InvalidInput("This action is only available for Docker apps.".into()))?;
-        let _guard = self.app_operation.try_lock().map_err(|_| {
-            CoreError::Runtime("Another app change is in progress on this machine. Try again when it finishes.".into())
-        })?;
+        let _guard = self.try_app_operation()?;
         let subcmd = match action {
             AppAction::Start => "start",
             AppAction::Stop => "stop",
@@ -568,18 +599,27 @@ impl NodeOps for LocalNodeAdapter {
         Ok(AppActionResult::Done)
     }
 
-    async fn deploy_app(&self, spec: DeploySpec) -> CoreResult<ManagedApp> {
+    async fn deploy_app(&self, spec: DeploySpec, fresh_volumes: bool) -> CoreResult<ManagedApp> {
         let mut args = vec!["run".into(), "-d".into()];
         args.extend(container_args(&spec, &spec.name, "unless-stopped")?);
         args.extend(["--".into(), spec.image.clone()]);
         let args: Vec<_> = args.iter().map(String::as_str).collect();
 
-        let _guard = self.app_operation.try_lock().map_err(|_| {
-            CoreError::Runtime("Another app change is in progress on this machine. Try again when it finishes.".into())
-        })?;
+        let _guard = self.try_app_operation()?;
         preflight(&spec).await?;
         pull_image(&spec.image).await?;
+        if fresh_volumes {
+            for mount in &spec.volumes {
+                let (name, _) = mount.split_once(':').expect("validated volume");
+                require_new_volume(name, docker(&["volume", "inspect", "--", name], 4).await)?;
+            }
+        }
         let id_short: String = docker(&args, 60).await?.chars().take(12).collect();
+        let ids = [&*id_short];
+        let (details, anonymous) = tokio::join!(container_details(&ids), anonymous_volumes());
+        let storage = details
+            .get(&id_short)
+            .and_then(|info| info.storage(anonymous.as_ref()));
 
         Ok(ManagedApp {
             id: format!("docker:{id_short}"),
@@ -592,6 +632,7 @@ impl NodeOps for LocalNodeAdapter {
             state: AppState::Running,
             can_update: Some(true),
             update_available: false,
+            storage,
             ports: spec.host_port.into_iter().collect(),
             domains: vec![],
             usage: AppUsage {
@@ -606,7 +647,7 @@ impl NodeOps for LocalNodeAdapter {
     async fn tail_logs(&self, app_id: &str, lines: usize) -> CoreResult<Vec<String>> {
         if let Some(container_id) = app_id.strip_prefix("docker:") {
             let n = lines.to_string();
-            let out = run_cmd("docker", &["logs", "--tail", &n, container_id])
+            let out = run_cmd("docker", &["logs", "--tail", &n, "--", container_id])
                 .await
                 .unwrap_or_default();
             return Ok(out.lines().map(|s| s.to_string()).collect());

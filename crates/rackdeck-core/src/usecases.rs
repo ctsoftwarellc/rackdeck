@@ -34,7 +34,11 @@ impl FleetService {
         node_id: &str,
     ) -> CoreResult<Vec<ManagedApp>> {
         principal.authorize(Capability::ReadTelemetry, Some(node_id))?;
-        self.local_node.list_apps().await
+        if node_id == self.local_node_id {
+            self.local_node.list_apps().await
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub async fn execute_app_action(
@@ -79,33 +83,20 @@ impl FleetService {
         spec: DeploySpec,
     ) -> CoreResult<ManagedApp> {
         let target = format!("{node_id}/{}", spec.name);
-        if let Err(err) = principal.authorize(Capability::ControlApp, Some(node_id)) {
-            let _ = self
-                .audit
-                .append_audit(AuditEvent {
-                    id: format!("aud-{}", now_unix_secs()),
-                    ts: now_unix_secs(),
-                    actor: principal.actor_name().to_string(),
-                    action: "deploy app".into(),
-                    target,
-                    ok: false,
-                    reason: Some(err.to_string()),
-                })
-                .await;
-            return Err(err);
-        }
-
-        // A host folder mount reaches the machine's files, so only the owner may use one, not a token.
-        if !matches!(principal, Principal::Owner { .. }) {
-            if let Err(e) = assistant_volumes_ok(&spec) {
-                return Err(crate::CoreError::Forbidden(e));
+        let fresh_volumes =
+            !matches!(principal, Principal::Owner { .. }) && !spec.volumes.is_empty();
+        let res = async {
+            principal.authorize(Capability::ControlApp, Some(node_id))?;
+            if fresh_volumes {
+                assistant_volumes_ok(&spec).map_err(crate::CoreError::Forbidden)?;
+            }
+            if node_id == self.local_node_id {
+                self.local_node.deploy_app(spec, fresh_volumes).await
+            } else {
+                self.remote.deploy_app(node_id, spec, fresh_volumes).await
             }
         }
-        let res = if node_id == self.local_node_id {
-            self.local_node.deploy_app(spec).await
-        } else {
-            self.remote.deploy_app(node_id, spec).await
-        };
+        .await;
         let _ = self
             .audit
             .append_audit(AuditEvent {

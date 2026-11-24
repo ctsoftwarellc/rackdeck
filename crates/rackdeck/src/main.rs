@@ -1,13 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use rackdeck_api::{build_router, seal, update, AgentBus, ApiState, AssetProvider};
-use rackdeck_core::{AppActionResult, FleetRepository, FleetService, NodeOps, NodeStatus};
+use rackdeck_core::{
+    now_unix_secs, AppActionResult, FleetRepository, FleetService, NodeOps, NodeStatus,
+};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
-use rackdeck_protocol::{AgentCommand, AgentCommandResult, AgentOp, AgentOutput, ServerWsEvent};
+use rackdeck_protocol::{
+    AgentCommand, AgentCommandResult, AgentOp, AgentOutput, ServerWsEvent, MAX_CHECKIN_BODY_BYTES,
+};
 use rackdeck_store::SqliteStore;
 use rust_embed::Embed;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -133,6 +138,8 @@ pub async fn build_all_in_one_state(
         remote_apps: Arc::new(RwLock::new(HashMap::new())),
         join_tokens: Arc::new(RwLock::new(HashMap::new())),
         join_requests: Arc::new(RwLock::new(HashMap::new())),
+        ignored_join_keys: Default::default(),
+        agent_admission: Default::default(),
         agent_bus,
         owner_password: std::env::var("RACKDECK_PASSWORD").ok().filter(|s| !s.is_empty()),
         owner_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -163,6 +170,7 @@ pub async fn build_all_in_one_state(
             if tick % 5 == 0 {
                 mark_stale_nodes_offline(&bg_state).await;
                 if let Ok(apps) = bg_state.local_node.list_apps().await {
+                    let _admission = bg_state.agent_admission.lock().await;
                     *bg_state.latest_apps.write().await = apps.clone();
                     let mut combined = apps;
                     for list in bg_state.remote_apps.read().await.values() {
@@ -182,6 +190,7 @@ pub async fn build_all_in_one_state(
 
 /// Agents that stopped checking in: flag offline and drop their cached apps so nothing shows "running".
 async fn mark_stale_nodes_offline(state: &ApiState) {
+    let _admission = state.agent_admission.lock().await;
     for id in state.agent_bus.take_stale().await {
         state.remote_apps.write().await.remove(&id);
         if let Ok(Some(mut node)) = state.fleet_repo.get_node(&id).await {
@@ -262,6 +271,7 @@ fn load_agent_state(path: &std::path::Path, controller_key: Option<String>) -> A
         if saved.controller_key.as_deref() != Some(k.as_str()) {
             saved.controller_key = Some(k);
             saved.channel_secret = None;
+            saved.controllers.clear();
         }
     }
     if saved.controller_key.is_some() && saved.channel_secret.is_none() {
@@ -314,14 +324,39 @@ fn find_dashboards(wait: std::time::Duration) -> Vec<(String, String, String)> {
             next_send += std::time::Duration::from_millis(700);
         }
         let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&buf[..n]) else { continue };
-        if let (Some(k), Some(name), Some(port)) = (v["key"].as_str(), v["name"].as_str(), v["port"].as_u64()) {
-            if hex32(k).is_some() && !out.iter().any(|(_, ok, _)| ok == k) {
-                out.push((format!("http://{}:{port}", from.ip()), k.to_string(), name.to_string()));
-            }
-        }
+        add_find_reply(&mut out, from, &buf[..n]);
     }
     out
+}
+
+fn add_find_reply(out: &mut Vec<(String, String, String)>, sender: SocketAddr, data: &[u8]) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return;
+    };
+    let (Some(key), Some(name), Some(port)) = (
+        v["key"].as_str().and_then(hex32),
+        v["name"].as_str(),
+        v["port"].as_u64(),
+    ) else {
+        return;
+    };
+    let Ok(port) = u16::try_from(port) else {
+        return;
+    };
+    if port == 0 {
+        return;
+    }
+    let addr = format!("http://{}", SocketAddr::new(sender.ip(), port));
+    let key = hex::encode(key);
+    if !out.iter().any(|(url, k, _)| *url == addr && *k == key) {
+        out.push((
+            addr,
+            key,
+            name.chars()
+                .filter(|c| !c.is_control() && !matches!(c, '\u{2028}' | '\u{2029}'))
+                .collect(),
+        ));
+    }
 }
 
 /// Answer `find_dashboards` broadcasts from machines on the home network. Private addresses only,
@@ -419,37 +454,231 @@ async fn doctor() {
     }
 }
 
+struct CheckinReply {
+    status: u16,
+    body: String,
+}
+
+impl CheckinReply {
+    fn rejection(&self) -> String {
+        serde_json::from_str::<serde_json::Value>(&self.body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("HTTP {}", self.status))
+    }
+
+    fn pending(&self) -> bool {
+        self.status == 403
+            && serde_json::from_str::<serde_json::Value>(&self.body)
+                .is_ok_and(|v| v["pending"].as_bool() == Some(true))
+    }
+
+    fn decode(&self, key: Option<[u8; 32]>) -> Result<serde_json::Value, String> {
+        if self.status != 200 {
+            return Err(self.rejection());
+        }
+        let value: serde_json::Value = match key {
+            Some(key) => {
+                let plain = hex::decode(&self.body)
+                    .ok()
+                    .and_then(|ct| seal::open_response(&key, &ct))
+                    .ok_or("couldn't open the dashboard's reply")?;
+                serde_json::from_slice(&plain)
+            }
+            None => serde_json::from_str(&self.body),
+        }
+        .map_err(|_| "invalid check-in reply")?;
+        if value["ok"].as_bool() != Some(true) {
+            return Err("dashboard did not accept the check-in".into());
+        }
+        Ok(value)
+    }
+}
+
+async fn send_checkin(
+    host: &str,
+    auth_header: &str,
+    payload: &str,
+) -> Result<CheckinReply, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let timeout = Duration::from_secs(5);
+    let mut stream = tokio::time::timeout(timeout, TcpStream::connect(host))
+        .await
+        .map_err(|_| "connection timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let request = format!(
+        "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host}\r\n{auth_header}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    tokio::time::timeout(timeout, stream.write_all(request.as_bytes()))
+        .await
+        .map_err(|_| "sending check-in timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let mut raw = String::new();
+    tokio::time::timeout(timeout, stream.read_to_string(&mut raw))
+        .await
+        .map_err(|_| "waiting for reply timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let (head, body) = raw.split_once("\r\n\r\n").ok_or("invalid HTTP reply")?;
+    let mut status_line = head.split_whitespace();
+    if !matches!(status_line.next(), Some("HTTP/1.0" | "HTTP/1.1")) {
+        return Err("invalid HTTP reply".into());
+    }
+    let status = status_line
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or("invalid HTTP status")?;
+    Ok(CheckinReply {
+        status,
+        body: body.trim().to_string(),
+    })
+}
+
+fn controller_hosts(urls: &str) -> impl Iterator<Item = &str> {
+    urls.split(',').filter_map(|url| {
+        let host = url
+            .trim()
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        host.split('/').next().filter(|h| !h.is_empty())
+    })
+}
+
+fn sealed_checkin(
+    ck: &[u8; 32],
+    cs: &[u8; 32],
+    payload: &str,
+) -> Result<(String, String, [u8; 32]), String> {
+    let (header, body, key) =
+        seal::seal_request(ck, cs, payload.as_bytes()).ok_or("invalid dashboard key")?;
+    Ok((format!("X-Rackdeck-Seal: {header}"), hex::encode(body), key))
+}
+
+async fn run_join_request(controller: &str, key: String) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let host = controller_hosts(controller)
+        .next()
+        .ok_or("invalid dashboard address")?;
+    let ck = hex32(&key).ok_or("invalid dashboard key")?;
+    let saved = load_agent_state(&agent_state_path(), Some(key));
+    let cs = saved
+        .channel_secret
+        .as_deref()
+        .and_then(hex32)
+        .ok_or("missing agent key")?;
+    let local = LocalNodeAdapter::new(7420).with_node_id(saved.node_id);
+    let node = local.inspect_node().await?;
+    let code = seal::pair_code(&ck, &seal::public(&cs));
+    let mut payload = serde_json::json!({ "node": node, "apps": [], "joinRequestOnly": true });
+    let mut confirmed = false;
+    let deadline = Instant::now() + Duration::from_secs(900);
+    loop {
+        payload["timestamp"] = serde_json::json!(now_unix_secs());
+        let (header, body, key) = sealed_checkin(&ck, &cs, &payload.to_string())?;
+        let reply = match send_checkin(host, &header, &body).await {
+            Ok(reply) => reply,
+            Err(e) if confirmed && Instant::now() < deadline => {
+                tracing::warn!("Waiting for the dashboard: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let pending = reply.pending();
+        if !pending {
+            reply.decode(Some(key))?;
+        }
+        if !confirmed {
+            println!(
+                "Your dashboard should show a request from {} with code {code}.",
+                node.name
+            );
+            print!("Does it? [y/N] ");
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                println!("Nothing was installed.");
+                std::process::exit(3);
+            }
+            confirmed = true;
+            if pending {
+                println!("Click Allow on your dashboard. Waiting for approval...");
+            }
+        }
+        if !pending {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("The join request expired. Run the installer again.".into());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+const MAX_CHECKIN_PLAIN_BYTES: usize = MAX_CHECKIN_BODY_BYTES / 2 - 16;
+const MAX_RESULT_BYTES: usize = 64 * 1024;
+
+fn cap_command_result(result: &mut AgentCommandResult) {
+    if serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= MAX_RESULT_BYTES) {
+        return;
+    }
+    if let Ok(AgentOutput::Lines { lines }) = &mut result.result {
+        let mut remaining = MAX_RESULT_BYTES - 256;
+        let mut kept = Vec::new();
+        for line in lines.iter().rev() {
+            let bytes = serde_json::to_vec(line).map_or(usize::MAX, |v| v.len() + 1);
+            if bytes > remaining {
+                // JSON escaping takes at most six bytes per input byte.
+                let suffix = remaining.saturating_sub(3) / 6;
+                let mut start = line.len().saturating_sub(suffix);
+                while !line.is_char_boundary(start) {
+                    start += 1;
+                }
+                if start < line.len() {
+                    kept.push(line[start..].to_string());
+                }
+                break;
+            }
+            remaining -= bytes;
+            kept.push(line.clone());
+        }
+        kept.push("[Rackdeck trimmed older log output.]".into());
+        kept.reverse();
+        *lines = kept;
+    } else {
+        result.result = Err("This result was too large to send to the dashboard.".into());
+    }
+}
+
 async fn run_remote_agent(
     controller: String,
     initial_token: String,
     controller_key: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-
     let state_path = agent_state_path();
     let mut saved = load_agent_state(&state_path, controller_key);
-    saved.controllers = controller.clone();
-    save_agent_state(&state_path, &saved);
     let mut secrets_version: Option<String> = None;
     let local = Arc::new(LocalNodeAdapter::new(7420).with_node_id(saved.node_id.clone()));
-    // --controller may list several addresses (Tailscale, LAN). Stick with one until it stops answering.
-    let hosts: Vec<String> = controller
-        .split(',')
-        .filter_map(|c| {
-            let h = c.trim().trim_start_matches("http://").trim_start_matches("https://");
-            h.split('/').next().filter(|h| !h.is_empty()).map(str::to_string)
-        })
-        .collect();
+    let mut hosts = Vec::new();
+    for host in controller_hosts(&saved.controllers).chain(controller_hosts(&controller)) {
+        if !hosts.iter().any(|h| h == host) {
+            hosts.push(host.to_string());
+        }
+    }
     if hosts.is_empty() {
         return Err("invalid controller url".into());
     }
+    saved.controllers = hosts.join(",");
+    save_agent_state(&state_path, &saved);
     let mut host_idx = 0usize;
 
     // A saved key survives restarts; the one-time join token is only a fallback for first contact.
     // No token at all means we found the dashboard on the home network and wait for Allow.
     let mut join_token = Some(initial_token).filter(|t| !t.is_empty());
-    let mut hosts = hosts;
     let mut fails_in_row = 0usize;
     let mut last_find = std::time::Instant::now();
     let mut bearer = match saved.agent_key.clone() {
@@ -460,7 +689,9 @@ async fn run_remote_agent(
     let mut last_err: Option<String> = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     // Finished command results wait here until a check-in delivers them.
-    let mut results: Vec<AgentCommandResult> = Vec::new();
+    let mut results: VecDeque<(AgentCommandResult, Instant)> = VecDeque::new();
+    let mut rediscovered = None;
+    let mut restart_pending = false;
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<AgentCommandResult>();
     tracing::info!("rackdeck agent connecting to {controller} as {}", local.callsign());
 
@@ -468,10 +699,17 @@ async fn run_remote_agent(
         // Check in every 2s, or right away when a command finishes so the UI isn't kept waiting.
         tokio::select! {
             _ = interval.tick() => {}
-            Some(r) = done_rx.recv() => results.push(r),
+            Some(r) = done_rx.recv() => results.push_back((r, Instant::now())),
         }
         while let Ok(r) = done_rx.try_recv() {
-            results.push(r);
+            results.push_back((r, Instant::now()));
+        }
+        while results
+            .front()
+            .is_some_and(|(_, since)| since.elapsed() >= Duration::from_secs(600))
+        {
+            results.pop_front();
+            tracing::warn!("The dashboard did not receive an old command result.");
         }
         let node = match local.inspect_node().await {
             Ok(n) => n,
@@ -482,208 +720,191 @@ async fn run_remote_agent(
         };
         let sample = local.sample().await.ok();
         let apps = local.list_apps().await.unwrap_or_default();
-        let mut payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results, "appManagement": true });
-        // Sealed when we know the controller's key: encrypted both ways, and the only way secrets arrive.
+        let mut payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": [], "appManagement": true });
         let sealing = saved
             .controller_key
             .as_deref()
             .and_then(hex32)
             .zip(saved.channel_secret.as_deref().and_then(hex32));
-        let (auth_hdr, payload, reply_key) = match sealing {
-            Some((ck, cs)) => {
-                // On first contact the join token sits in `bearer` (the legacy path takes it from `join_token`).
-                let token = join_token.clone().or_else(|| bearer.starts_with("rd_join_").then(|| bearer.clone()));
-                payload["joinToken"] = serde_json::json!(token);
-                payload["agentKey"] = serde_json::json!(saved.agent_key);
-                payload["secretsVersion"] = serde_json::json!(secrets_version);
-                let (hdr, ct, k) = seal::seal_request(&ck, &cs, payload.to_string().as_bytes());
-                (format!("X-Rackdeck-Seal: {hdr}"), hex::encode(ct), Some(k))
-            }
-            None => (format!("Authorization: Bearer {bearer}"), payload.to_string(), None),
-        };
-
-        let host_port = hosts[host_idx].clone();
-        let connect_res = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            TcpStream::connect(&host_port),
-        )
-        .await;
-
-        let mut stream = match connect_res {
-            Ok(Ok(s)) => {
-                fails_in_row = 0;
-                s
-            }
-            Ok(Err(e)) => {
-                host_idx = (host_idx + 1) % hosts.len();
-                fails_in_row += 1;
-                rediscover(&mut hosts, &mut host_idx, &mut last_find, fails_in_row, &saved, &state_path).await;
-                let msg = format!("cannot connect to {host_port}: {e}");
-                if last_err.as_deref() != Some(&msg) {
-                    tracing::warn!("{msg} (check controller IP/port or try LAN IP if inside WSL)");
-                    last_err = Some(msg);
-                }
-                continue;
-            }
-            Err(_) => {
-                host_idx = (host_idx + 1) % hosts.len();
-                fails_in_row += 1;
-                rediscover(&mut hosts, &mut host_idx, &mut last_find, fails_in_row, &saved, &state_path).await;
-                let msg = format!("timed out connecting to {host_port} after 5s");
-                if last_err.as_deref() != Some(&msg) {
-                    tracing::warn!("{msg} (Tailscale/firewall may be blocking route — try controller LAN IP)");
-                    last_err = Some(msg);
-                }
-                continue;
-            }
-        };
-
-        let req = format!(
-            "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host_port}\r\n{auth_hdr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-            payload.len()
-        );
-        if let Err(e) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.write_all(req.as_bytes()),
-        )
-        .await
-        {
-            let msg = format!("failed writing checkin to {host_port}: {e}");
-            if last_err.as_deref() != Some(&msg) {
-                tracing::warn!("{msg}");
-                last_err = Some(msg);
-            }
-            continue;
+        if let Some((_, _)) = sealing {
+            let token = join_token
+                .clone()
+                .or_else(|| bearer.starts_with("rd_join_").then(|| bearer.clone()));
+            payload["joinToken"] = serde_json::json!(token);
+            payload["agentKey"] = serde_json::json!(saved.agent_key);
+            payload["secretsVersion"] = serde_json::json!(secrets_version);
+            payload["timestamp"] = serde_json::json!(now_unix_secs());
         }
-
-        let mut raw = String::new();
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.read_to_string(&mut raw),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                let msg = format!("failed reading response from {host_port}: {e}");
-                if last_err.as_deref() != Some(&msg) {
-                    tracing::warn!("{msg}");
-                    last_err = Some(msg);
-                }
-                continue;
-            }
-            Err(_) => {
-                let msg = format!("timed out waiting for response from {host_port}");
-                if last_err.as_deref() != Some(&msg) {
-                    tracing::warn!("{msg}");
-                    last_err = Some(msg);
-                }
+        let mut size = payload.to_string().len();
+        if size > MAX_CHECKIN_PLAIN_BYTES - MAX_RESULT_BYTES - 1 {
+            tracing::warn!("The app list is too large to send to the dashboard.");
+            payload["apps"] = serde_json::json!([]);
+            size = payload.to_string().len();
+        }
+        if size > MAX_CHECKIN_PLAIN_BYTES - MAX_RESULT_BYTES - 1 {
+            tracing::warn!("The machine report is too large to send to the dashboard.");
+            payload["sample"] = serde_json::Value::Null;
+            size = payload.to_string().len();
+            if size > MAX_CHECKIN_PLAIN_BYTES - MAX_RESULT_BYTES - 1 {
                 continue;
             }
         }
-
-        let status_line = raw.lines().next().unwrap_or("").trim().to_string();
-        let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").trim();
-        if !status_line.contains(" 200 ") && !status_line.ends_with(" 200") {
-            if status_line.contains(" 401") && reply_key.is_none() {
+        let batch = payload["results"].as_array_mut().unwrap();
+        for (result, _) in &results {
+            let value = serde_json::to_value(result)?;
+            size += value.to_string().len() + 1;
+            if size > MAX_CHECKIN_PLAIN_BYTES {
+                break;
+            }
+            batch.push(value);
+        }
+        let sent = batch.len();
+        let payload = payload.to_string();
+        let host = hosts[host_idx].clone();
+        let sealed = sealing.is_some();
+        let val = match async {
+            let (auth_hdr, payload, reply_key) = match sealing {
+                Some((ck, cs)) => {
+                    let (header, body, key) = sealed_checkin(&ck, &cs, &payload)?;
+                    (header, body, Some(key))
+                }
+                None => (format!("Authorization: Bearer {bearer}"), payload, None),
+            };
+            let reply = send_checkin(&host, &auth_hdr, &payload).await?;
+            if reply.status == 401 && reply_key.is_none() {
                 if let Some(t) = join_token.take() {
-                    tracing::info!("saved agent key was rejected, trying the join token instead");
                     bearer = t;
-                    continue;
                 }
             }
-            let msg = if status_line.contains(" 403") && body.contains("\"pending\"") {
-                format!(
+            if reply.pending() {
+                return Err(format!(
                     "waiting for you to click Allow on the dashboard (code {})",
                     pair_code_for(&saved).unwrap_or_default()
-                )
-            } else {
-                format!("controller {host_port} rejected checkin: {status_line} ({body})")
-            };
-            if last_err.as_deref() != Some(&msg) {
-                tracing::warn!("{msg}");
-                last_err = Some(msg);
+                ));
             }
-            continue;
+            reply.decode(reply_key)
         }
-
-        if last_err.is_some() {
-            tracing::info!("reconnected to the dashboard at {host_port}");
-            last_err = None;
-        }
-
-        // An update result has now reached the controller, so it's safe to restart into the new binary.
-        let restart = results
-            .iter()
-            .any(|r| matches!(r.result, Ok(AgentOutput::Updated { version: Some(_) })));
-        results.clear(); // delivered
-        if restart {
-            tracing::info!("updated, restarting agent");
-            let err = update::restart_self();
-            tracing::warn!("couldn't restart after update ({err}); exiting so the service manager restarts it");
-            std::process::exit(1);
-        }
-
-        let body = match reply_key {
-            Some(k) => match hex::decode(body).ok().and_then(|ct| seal::open_response(&k, &ct)) {
-                Some(pt) => String::from_utf8_lossy(&pt).into_owned(),
-                None => {
-                    tracing::warn!("couldn't open the controller's reply; is this the right controller?");
-                    continue;
+        .await
+        {
+            Ok(val) => val,
+            Err(reason) => {
+                host_idx = (host_idx + 1) % hosts.len();
+                fails_in_row = fails_in_row.saturating_add(1);
+                rediscover(
+                    &mut hosts,
+                    &mut host_idx,
+                    &mut last_find,
+                    fails_in_row,
+                    &saved,
+                    &mut rediscovered,
+                )
+                .await;
+                let msg = format!("check-in to {host}: {reason}");
+                if last_err.as_deref() != Some(&msg) {
+                    tracing::warn!("{msg}");
+                    last_err = Some(msg);
                 }
-            },
-            None => body.to_string(),
+                continue;
+            }
         };
-        if reply_key.is_some() && (join_token.is_some() || saved.agent_key.is_some() || !bearer.is_empty()) {
+
+        if sealed {
+            fails_in_row = 0;
+            if last_err.take().is_some() {
+                tracing::info!("reconnected to the dashboard at {host}");
+            }
+            if rediscovered.as_deref() == Some(&host) {
+                hosts.swap(0, host_idx);
+                host_idx = 0;
+                saved.controllers = hosts.join(",");
+                save_agent_state(&state_path, &saved);
+                rediscovered = None;
+            }
+        }
+
+        // Only the batches just acknowledged are retired. A restart also needs a verified seal.
+        restart_pending |= results
+            .drain(..sent)
+            .any(|(r, _)| matches!(r.result, Ok(AgentOutput::Updated { version: Some(_) })));
+        if restart_pending && sealed {
+            if let Ok(_guard) = local.try_app_operation() {
+                tracing::info!("updated, restarting agent");
+                let err = update::restart_self();
+                tracing::warn!("couldn't restart after update ({err}); exiting so the service manager restarts it");
+                std::process::exit(1);
+            }
+        }
+
+        if sealed && (join_token.is_some() || saved.agent_key.is_some() || !bearer.is_empty()) {
             // Accepted on the sealed channel: the join token is spent and the old bearer key retired.
             join_token = None;
             bearer.clear();
             saved.agent_key = None;
             save_agent_state(&state_path, &saved);
         }
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-            if reply_key.is_none() && saved.controller_key.is_none() {
-                // Agent from before sealed check-ins: pin the key this controller reports, then switch over.
-                if let Some(k) = val.get("controllerKey").and_then(|v| v.as_str()).filter(|k| hex32(k).is_some()) {
-                    saved.controller_key = Some(k.to_string());
-                    saved.channel_secret = Some(hex::encode(seal::random32()));
-                    save_agent_state(&state_path, &saved);
-                }
-            }
-            if let Some(sec) = val.get("secrets") {
-                let vars: std::collections::BTreeMap<String, String> =
-                    serde_json::from_value(sec["vars"].clone()).unwrap_or_default();
-                match seal::write_secrets_file(&vars) {
-                    Ok(()) => {
-                        secrets_version = sec["version"].as_str().map(str::to_string);
-                        tracing::info!("secrets updated ({} set)", vars.len());
-                    }
-                    Err(e) => tracing::warn!("couldn't write secrets file: {e}"),
-                }
-            }
-            let commands: Vec<AgentCommand> = val
-                .get("commands")
-                .and_then(|c| serde_json::from_value(c.clone()).ok())
-                .unwrap_or_default();
-            for cmd in commands {
-                let local = local.clone();
-                let done_tx = done_tx.clone();
-                tokio::spawn(async move {
-                    tracing::info!("running {:?} from controller", cmd.op);
-                    let result = run_agent_command(local.as_ref(), cmd.op).await;
-                    let _ = done_tx.send(AgentCommandResult { id: cmd.id, result });
-                });
-            }
-            if let Some(k) = val.get("agentKey").and_then(|v| v.as_str()) {
-                bearer = k.to_string();
-                saved.agent_key = Some(bearer.clone());
+        if !sealed && saved.controller_key.is_none() {
+            // Agent from before sealed check-ins: pin the key this controller reports, then switch over.
+            if let Some(k) = val
+                .get("controllerKey")
+                .and_then(|v| v.as_str())
+                .filter(|k| hex32(k).is_some())
+            {
+                saved.controller_key = Some(k.to_string());
+                saved.channel_secret = Some(hex::encode(seal::random32()));
                 save_agent_state(&state_path, &saved);
-                enrolled = true;
-                tracing::info!("connected & enrolled with controller {controller} as {}", local.callsign());
-            } else if !enrolled {
-                enrolled = true;
-                tracing::info!("connected to controller {controller} as {}", local.callsign());
             }
+        }
+        if let Some(sec) = val.get("secrets").filter(|_| sealed) {
+            let Ok(vars) = serde_json::from_value::<std::collections::BTreeMap<String, String>>(
+                sec["vars"].clone(),
+            ) else {
+                tracing::warn!("The dashboard sent invalid secret settings.");
+                continue;
+            };
+            match seal::write_secrets_file(&vars) {
+                Ok(()) => {
+                    secrets_version = sec["version"].as_str().map(str::to_string);
+                    tracing::info!("secrets updated ({} set)", vars.len());
+                }
+                Err(e) => tracing::warn!("couldn't write secrets file: {e}"),
+            }
+        }
+        let commands: Vec<AgentCommand> = val
+            .get("commands")
+            .and_then(|c| serde_json::from_value(c.clone()).ok())
+            .unwrap_or_default();
+        for cmd in commands
+            .into_iter()
+            .filter(|cmd| !cmd.id.is_empty() && cmd.id.len() <= 128)
+        {
+            let local = local.clone();
+            let done_tx = done_tx.clone();
+            tokio::spawn(async move {
+                let result = run_agent_command(local.as_ref(), cmd.op).await;
+                let mut result = AgentCommandResult { id: cmd.id, result };
+                cap_command_result(&mut result);
+                let _ = done_tx.send(result);
+            });
+        }
+        if let Some(k) = val
+            .get("agentKey")
+            .and_then(|v| v.as_str())
+            .filter(|_| !sealed)
+        {
+            bearer = k.to_string();
+            saved.agent_key = Some(bearer.clone());
+            save_agent_state(&state_path, &saved);
+            enrolled = true;
+            tracing::info!(
+                "connected & enrolled with controller {controller} as {}",
+                local.callsign()
+            );
+        } else if !enrolled {
+            enrolled = true;
+            tracing::info!(
+                "connected to controller {controller} as {}",
+                local.callsign()
+            );
         }
     }
 }
@@ -696,7 +917,7 @@ async fn rediscover(
     last_find: &mut std::time::Instant,
     fails_in_row: usize,
     saved: &AgentState,
-    state_path: &std::path::Path,
+    rediscovered: &mut Option<String>,
 ) {
     if fails_in_row < hosts.len() || last_find.elapsed() < std::time::Duration::from_secs(30) {
         return;
@@ -707,25 +928,52 @@ async fn rediscover(
     let Some((url, _, _)) = found.into_iter().find(|(_, k, _)| *k == pinned) else { return };
     let host = url.trim_start_matches("http://").to_string();
     if !hosts.contains(&host) {
-        tracing::info!("found the dashboard at its new address {host}");
-        hosts.insert(0, host);
-        let mut st = read_agent_state(state_path).unwrap_or_default();
-        st.controllers = hosts.join(",");
-        save_agent_state(state_path, &st);
+        if let Some(previous) = rediscovered.replace(host.clone()) {
+            hosts.retain(|h| *h != previous);
+        }
+        tracing::info!("trying a discovered dashboard address {host}");
+        hosts.push(host.clone());
     }
-    *host_idx = hosts.iter().position(|h| *h == url.trim_start_matches("http://")).unwrap_or(0);
+    *host_idx = hosts.iter().position(|h| *h == host).unwrap();
 }
 
 async fn run_agent_command(local: &LocalNodeAdapter, op: AgentOp) -> Result<AgentOutput, String> {
+    match &op {
+        AgentOp::AppAction { app_id, action } => {
+            tracing::info!(?action, %app_id, "running app action")
+        }
+        AgentOp::Deploy { spec, .. } => tracing::info!(app = %spec.name, "running deploy"),
+        AgentOp::Logs { app_id, .. } => tracing::info!(%app_id, "fetching app logs"),
+        AgentOp::Update => tracing::info!("running agent update"),
+    }
     match op {
-        AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|result| match result {
-            AppActionResult::Done => AgentOutput::Done,
-            AppActionResult::Updated => AgentOutput::AppUpdated { changed: true },
-            AppActionResult::AlreadyUpToDate => AgentOutput::AppUpdated { changed: false },
-        }),
-        AgentOp::Deploy { spec } => local.deploy_app(spec).await.map(|app| AgentOutput::App { app }),
-        AgentOp::Logs { app_id, lines } => local.tail_logs(&app_id, lines).await.map(|lines| AgentOutput::Lines { lines }),
-        AgentOp::Update => return update::self_update().await.map(|version| AgentOutput::Updated { version }),
+        AgentOp::AppAction { app_id, action } => {
+            local
+                .app_action(&app_id, action)
+                .await
+                .map(|result| match result {
+                    AppActionResult::Done => AgentOutput::Done,
+                    AppActionResult::Updated => AgentOutput::AppUpdated { changed: true },
+                    AppActionResult::AlreadyUpToDate => AgentOutput::AppUpdated { changed: false },
+                })
+        }
+        AgentOp::Deploy {
+            spec,
+            fresh_volumes,
+        } => local
+            .deploy_app(spec, fresh_volumes)
+            .await
+            .map(|app| AgentOutput::App { app: Box::new(app) }),
+        AgentOp::Logs { app_id, lines } => local
+            .tail_logs(&app_id, lines)
+            .await
+            .map(|lines| AgentOutput::Lines { lines }),
+        AgentOp::Update => {
+            let _guard = local.try_app_operation().map_err(|e| e.to_string())?;
+            return update::self_update()
+                .await
+                .map(|version| AgentOutput::Updated { version });
+        }
     }
     .map_err(|e| e.to_string())
 }
@@ -739,7 +987,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h" | "help")) {
         println!(
-            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n  rackdeck update                                       Install the latest release over this binary\n  rackdeck doctor                                       Explain why this machine shows as offline\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
+            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n  rackdeck update                                       Install the latest release over this binary\n  rackdeck doctor                                       Explain why this machine shows as offline\n  rackdeck join-request --controller <URL> --key <KEY>  Request approval on the home network\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -781,7 +1029,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", pair_code_for(&st).unwrap_or_default());
         return Ok(());
     }
-    if args.get(1).map(|s| s.as_str()) == Some("agent") {
+    if matches!(
+        args.get(1).map(|s| s.as_str()),
+        Some("agent" | "join-request")
+    ) {
         let mut controller = std::env::var("RACKDECK_CONTROLLER").unwrap_or_default();
         let mut token = std::env::var("RACKDECK_JOIN_TOKEN").unwrap_or_default();
         let mut controller_key = std::env::var("RACKDECK_CONTROLLER_KEY").ok();
@@ -802,6 +1053,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => i += 1,
             }
+        }
+        if args[1] == "join-request" {
+            return run_join_request(
+                &controller,
+                controller_key.ok_or("A dashboard key is required.")?,
+            )
+            .await;
         }
         let has_key = controller_key.is_some() || read_agent_state(&agent_state_path()).is_some_and(|s| s.controller_key.is_some());
         if controller.is_empty() || (token.is_empty() && !has_key) {
@@ -848,7 +1106,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              Set RACKDECK_PASSWORD to open it to other devices and let machines join."
         );
     }
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -856,6 +1118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use rackdeck_connect::relay::{relay_router, RelayState};
+    use rackdeck_core::RemoteDispatch;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -881,6 +1144,287 @@ mod tests {
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out
+    }
+
+    async fn checkin_test_dashboard() -> (ApiState, SocketAddr) {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut state =
+            build_all_in_one_state(addr.port(), ":memory:", "ws://127.0.0.1:7430".into(), false)
+                .await
+                .unwrap();
+        state.owner_password = None;
+        let app = build_router(state.clone());
+        tokio::spawn(async move {
+            axum::serve(
+                server,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (state, addr)
+    }
+
+    async fn test_agent_node(state: &ApiState, id: &str) -> rackdeck_core::Node {
+        let mut node = state
+            .fleet_repo
+            .get_node(&state.local_node_id)
+            .await
+            .unwrap()
+            .unwrap();
+        node.id = id.into();
+        node.name = id.into();
+        node
+    }
+
+    fn sealed_test_payload(
+        state: &ApiState,
+        agent: &[u8; 32],
+        payload: &serde_json::Value,
+    ) -> (String, String, [u8; 32]) {
+        let controller = seal::public(&seal::controller_secret(&state.signing_key.to_bytes()));
+        sealed_checkin(&controller, agent, &payload.to_string()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn replay_cannot_update_node_or_take_queued_commands() {
+        let (state, addr) = checkin_test_dashboard().await;
+        let agent = seal::random32();
+        let id = "replay-test";
+        let hash = format!("x25519:{}", hex::encode(seal::public(&agent)));
+        state
+            .fleet_repo
+            .set_agent_key_hash(id, &hash)
+            .await
+            .unwrap();
+        let mut node = test_agent_node(&state, id).await;
+        let mut body = serde_json::json!({"node":node,"apps":[],"timestamp":now_unix_secs()});
+        let (header, payload, key) = sealed_test_payload(&state, &agent, &body);
+        let host = addr.to_string();
+        assert!(send_checkin(&host, &header, &payload)
+            .await
+            .unwrap()
+            .decode(Some(key))
+            .is_ok());
+
+        node.last_seen += 1;
+        state.fleet_repo.upsert_node(node.clone()).await.unwrap();
+        let caller = state.agent_bus.tail_logs(id, "docker:test", 5);
+        let agent_loop = async {
+            let rejected = send_checkin(&host, &header, &payload).await.unwrap();
+            assert_eq!(rejected.status, 401);
+            assert_eq!(
+                state
+                    .fleet_repo
+                    .get_node(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .last_seen,
+                node.last_seen
+            );
+
+            let (header, payload, key) = sealed_test_payload(&state, &agent, &body);
+            let reply = send_checkin(&host, &header, &payload)
+                .await
+                .unwrap()
+                .decode(Some(key))
+                .unwrap();
+            let commands = reply["commands"].as_array().unwrap();
+            assert_eq!(commands.len(), 1);
+            body["results"] = serde_json::json!([{ "id": commands[0]["id"], "result": { "Ok": { "kind": "lines", "lines": ["still queued"] } } }]);
+            let (header, payload, key) = sealed_test_payload(&state, &agent, &body);
+            assert!(send_checkin(&host, &header, &payload)
+                .await
+                .unwrap()
+                .decode(Some(key))
+                .is_ok());
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(caller, agent_loop)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap(), ["still queued"]);
+    }
+
+    #[tokio::test]
+    async fn enrollment_cannot_replace_a_machine_with_the_same_id() {
+        let (state, addr) = checkin_test_dashboard().await;
+        let host = addr.to_string();
+        let node = test_agent_node(&state, "ubuntu").await;
+        let first = seal::random32();
+        let second = seal::random32();
+        let mut body = serde_json::json!({"node":node,"apps":[],"joinRequestOnly":true});
+        for agent in [&first, &second] {
+            let (header, payload, _) = sealed_test_payload(&state, agent, &body);
+            assert!(send_checkin(&host, &header, &payload)
+                .await
+                .unwrap()
+                .pending());
+        }
+        body["node"]["name"] = serde_json::json!("changed");
+        let (header, payload, _) = sealed_test_payload(&state, &second, &body);
+        assert!(send_checkin(&host, &header, &payload)
+            .await
+            .unwrap()
+            .pending());
+        let first = hex::encode(seal::public(&first));
+        let second_pub = hex::encode(seal::public(&second));
+        assert_eq!(state.join_requests.read().await[&second_pub].name, "ubuntu");
+        let allow = |key: &str| format!("/api/v1/join-requests/{key}");
+        assert!(http_post_json(addr, &allow(&first), "{}", None)
+            .await
+            .contains("200 OK"));
+
+        let message = "A machine called ubuntu is already joined. Remove it on its page first, then try again.";
+        let refused = http_post_json(addr, &allow(&second_pub), "{}", None).await;
+        assert!(
+            refused.contains("403") && refused.contains(message),
+            "{refused}"
+        );
+        body["node"]["name"] = serde_json::json!("ubuntu");
+        let (header, payload, _) = sealed_test_payload(&state, &second, &body);
+        let refused = send_checkin(&host, &header, &payload).await.unwrap();
+        assert_eq!(refused.status, 403);
+        assert!(!refused.pending());
+        assert!(refused.rejection().contains(message));
+
+        let join = http_post_json(addr, "/api/v1/join-token", "{}", None).await;
+        let json: serde_json::Value =
+            serde_json::from_str(join.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let token = json["token"].as_str().unwrap();
+        body["joinRequestOnly"] = serde_json::json!(false);
+        body["joinToken"] = serde_json::json!(token);
+        let (header, payload, _) = sealed_test_payload(&state, &second, &body);
+        let refused = send_checkin(&host, &header, &payload).await.unwrap();
+        assert_eq!(refused.status, 403);
+        assert!(refused.rejection().contains(message));
+        let old = http_post_json(
+            addr,
+            "/api/v1/agent/checkin",
+            &body.to_string(),
+            Some(token),
+        )
+        .await;
+        assert!(old.contains("403") && old.contains(message), "{old}");
+        assert_eq!(
+            state.fleet_repo.agent_key_hash("ubuntu").await.unwrap(),
+            Some(format!("x25519:{first}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_must_match_for_owner_writes_and_websocket_upgrades() {
+        let (_, addr) = checkin_test_dashboard().await;
+        let status = |request: String| async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut line = String::new();
+            tokio::io::AsyncBufReadExt::read_line(
+                &mut tokio::io::BufReader::new(stream),
+                &mut line,
+            )
+            .await
+            .unwrap();
+            line.split_whitespace().nth(1).unwrap().to_string()
+        };
+        let post = |origin: &str, extra: &str, path: &str| {
+            let body = if path == "/mcp" {
+                r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#
+            } else {
+                "{}"
+            };
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let ws = |origin: &str| {
+            format!(
+            "GET /api/ws HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        )
+        };
+        let foreign = "http://unrelated.example";
+        let own = format!("http://{addr}");
+        let https = format!("https://{addr}");
+        assert_eq!(status(post(foreign, "", "/api/v1/join-token")).await, "403");
+        assert_eq!(status(post(&https, "", "/api/v1/join-token")).await, "403");
+        assert_eq!(
+            status(post(
+                &https,
+                "X-Forwarded-Proto: https\r\n",
+                "/api/v1/join-token"
+            ))
+            .await,
+            "200"
+        );
+        assert_eq!(status(post(&own, "", "/api/v1/join-token")).await, "200");
+        assert_eq!(
+            status(post(foreign, "Authorization: Bearer unknown\r\n", "/mcp")).await,
+            "401"
+        );
+        assert_eq!(status(ws(foreign)).await, "403");
+        let rebound = format!("unrelated.example:{}", addr.port());
+        let request = ws(&format!("http://{rebound}"))
+            .replace(&format!("Host: {addr}"), &format!("Host: {rebound}"));
+        assert_eq!(status(request).await, "403");
+        assert_eq!(status(ws(&format!("http://{}", addr.ip()))).await, "403");
+        assert_eq!(status(ws(&own)).await, "101");
+    }
+
+    #[test]
+    fn log_results_fit_the_wire_budget_after_json_escaping() {
+        let mut result = AgentCommandResult {
+            id: "cmd-test".into(),
+            result: Ok(AgentOutput::Lines {
+                lines: vec!["é\0\"".repeat(MAX_RESULT_BYTES), "latest".into()],
+            }),
+        };
+        cap_command_result(&mut result);
+        assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_RESULT_BYTES);
+        let Ok(AgentOutput::Lines { lines }) = result.result else {
+            panic!("logs were discarded")
+        };
+        assert!(lines.first().unwrap().contains("trimmed older log output"));
+        assert_eq!(lines.last().unwrap(), "latest");
+    }
+
+    #[test]
+    fn find_replies_use_sender_ip_validate_ports_and_strip_controls() {
+        let mut found = Vec::new();
+        let key = "a1".repeat(32);
+        let sender = "192.168.10.8:1024".parse().unwrap();
+        let mut reply = serde_json::json!({"key":key,"name":"Home\r\n\u{1b}Box\u{2028}", "port":7420,"ip":"192.168.1.6"});
+        add_find_reply(&mut found, sender, reply.to_string().as_bytes());
+        assert_eq!(
+            found,
+            [(
+                "http://192.168.10.8:7420".into(),
+                key.clone(),
+                "HomeBox".into()
+            )]
+        );
+        reply["key"] = serde_json::json!(key.to_ascii_uppercase());
+        add_find_reply(
+            &mut found,
+            "192.168.10.8:9000".parse().unwrap(),
+            reply.to_string().as_bytes(),
+        );
+        for port in [0, 65536] {
+            reply["port"] = serde_json::json!(port);
+            add_find_reply(&mut found, sender, reply.to_string().as_bytes());
+        }
+        assert_eq!(found.len(), 1);
+        reply["port"] = serde_json::json!(65535);
+        add_find_reply(&mut found, sender, reply.to_string().as_bytes());
+        add_find_reply(
+            &mut found,
+            "192.168.10.9:1024".parse().unwrap(),
+            reply.to_string().as_bytes(),
+        );
+        assert_eq!(found.len(), 3);
     }
 
     #[tokio::test]

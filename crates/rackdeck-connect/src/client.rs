@@ -12,7 +12,10 @@ use rackdeck_protocol::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{http::uri::Authority, Message},
+};
 
 use crate::sign_challenge;
 
@@ -154,9 +157,10 @@ async fn run_session(
                         if let Some((head, body)) = req_heads.remove(&frame.stream_id) {
                             let tx = out_tx.clone();
                             let upstream = cfg.local_upstream_addr.clone();
+                            let scheme = if cfg.relay_ws_url.starts_with("wss:") { "https" } else { "http" };
                             let sid = frame.stream_id;
                             tokio::spawn(async move {
-                                forward_local_http(upstream, sid, head, body, tx).await;
+                                forward_local_http(upstream, scheme, sid, head, body, tx).await;
                             });
                         }
                     }
@@ -173,12 +177,13 @@ async fn run_session(
 
 async fn forward_local_http(
     upstream_addr: String,
+    scheme: &str,
     stream_id: u32,
     head: HttpRequestHead,
     body: Vec<u8>,
     out_tx: mpsc::Sender<Bytes>,
 ) {
-    let result = proxy_raw_http(&upstream_addr, &head, &body).await;
+    let result = proxy_raw_http(&upstream_addr, scheme, &head, &body).await;
     match result {
         Ok((res_head, res_body)) => {
             if let Ok(encoded) = Frame::json(FrameType::Headers, stream_id, &res_head)
@@ -207,19 +212,29 @@ async fn forward_local_http(
 
 async fn proxy_raw_http(
     upstream_addr: &str,
+    scheme: &str,
     head: &HttpRequestHead,
     body: &[u8],
 ) -> Result<(HttpResponseHead, Vec<u8>), String> {
     let mut stream = TcpStream::connect(upstream_addr)
         .await
         .map_err(|e| e.to_string())?;
+    let host = head
+        .headers
+        .get("host")
+        .map(String::as_str)
+        .filter(|host| host.parse::<Authority>().is_ok())
+        .unwrap_or(upstream_addr);
     let mut req = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
-        head.method, head.path, upstream_addr
+        "{} {} HTTP/1.1\r\nHost: {host}\r\nX-Forwarded-Proto: {scheme}\r\nConnection: close\r\n",
+        head.method, head.path
     );
     for (k, v) in &head.headers {
         let lower = k.to_ascii_lowercase();
-        if lower == "host" || lower == "connection" || lower == "content-length" {
+        if matches!(
+            lower.as_str(),
+            "host" | "connection" | "content-length" | "x-forwarded-proto"
+        ) {
             continue;
         }
         req.push_str(&format!("{k}: {v}\r\n"));

@@ -50,6 +50,7 @@ export interface ManagedApp {
   state: "running" | "stopped" | "starting" | "stopping" | "error";
   canUpdate?: boolean;
   updateAvailable?: boolean;
+  storage?: { namedVolumes: string[]; hasAnonymousVolumes: boolean; hasFolders: boolean };
   ports: number[];
   domains: { host: string; tls: string }[];
   usage: { cpu: number; memMb: number; vramMb?: number; tps?: number };

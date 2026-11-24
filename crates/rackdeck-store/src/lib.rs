@@ -23,6 +23,7 @@ enum DbCmd {
     },
     GetAgentKey(String, oneshot::Sender<CoreResult<Option<String>>>),
     SetAgentKey(String, String, oneshot::Sender<CoreResult<()>>),
+    AgentKeyRemoved(String, oneshot::Sender<CoreResult<bool>>),
     DeleteNode(String, oneshot::Sender<CoreResult<()>>),
     ListSecrets(oneshot::Sender<CoreResult<Vec<Secret>>>),
     UpsertSecret(Secret, oneshot::Sender<CoreResult<()>>),
@@ -116,6 +117,10 @@ fn init_schema(conn: &Connection) -> CoreResult<()> {
             key_hash TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS removed_agent_keys (
+            key_hash TEXT PRIMARY KEY
+        );
+
         CREATE TABLE IF NOT EXISTS secrets (
             name TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL
@@ -206,17 +211,34 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
                 .map_err(|e| CoreError::Storage(e.to_string()));
             let _ = reply.send(res);
         }
-        DbCmd::DeleteNode(node_id, reply) => {
+        DbCmd::AgentKeyRemoved(hash, reply) => {
             let res = conn
-                .execute_batch("BEGIN")
-                .and_then(|_| conn.execute("DELETE FROM nodes WHERE id = ?1", params![node_id]))
-                .and_then(|_| conn.execute("DELETE FROM agent_keys WHERE node_id = ?1", params![node_id]))
-                .and_then(|_| conn.execute_batch("COMMIT"))
-                .map(|_| ())
-                .map_err(|e| {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    CoreError::Storage(e.to_string())
-                });
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM removed_agent_keys WHERE key_hash = ?1)",
+                    params![hash],
+                    |r| r.get(0),
+                )
+                .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::DeleteNode(node_id, reply) => {
+            let res = (|| {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO removed_agent_keys SELECT key_hash FROM agent_keys WHERE node_id = ?1",
+                    params![node_id],
+                )?;
+                tx.execute("DELETE FROM nodes WHERE id = ?1", params![node_id])?;
+                tx.execute("DELETE FROM agent_keys WHERE node_id = ?1", params![node_id])?;
+                tx.execute("DELETE FROM routes WHERE json_extract(payload_json, '$.nodeId') = ?1", params![node_id])?;
+                tx.execute(
+                    "UPDATE secrets SET payload_json = json_set(payload_json, '$.nodeIds',
+                        json((SELECT json_group_array(value) FROM json_each(payload_json, '$.nodeIds') WHERE value != ?1)))
+                     WHERE EXISTS (SELECT 1 FROM json_each(payload_json, '$.nodeIds') WHERE value = ?1)",
+                    params![node_id],
+                )?;
+                tx.commit()
+            })().map_err(|e| CoreError::Storage(e.to_string()));
             let _ = reply.send(res);
         }
         DbCmd::SetAgentKey(node_id, hash, reply) => {
@@ -273,8 +295,6 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
                 node.connect_enabled = enabled;
                 if let Some(s) = slug {
                     node.connect_slug = Some(s);
-                } else if node.connect_slug.is_none() {
-                    node.connect_slug = Some(node.name.to_lowercase());
                 }
                 let json =
                     serde_json::to_string(&node).map_err(|e| CoreError::Storage(e.to_string()))?;
@@ -674,6 +694,11 @@ impl FleetRepository for SqliteStore {
     async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()> {
         self.call(|r| DbCmd::SetAgentKey(node_id.to_string(), key_hash.to_string(), r)).await
     }
+    async fn agent_key_removed(&self, key_hash: &str) -> CoreResult<bool> {
+        self.call(|tx| DbCmd::AgentKeyRemoved(key_hash.to_string(), tx))
+            .await
+    }
+
     async fn delete_node(&self, node_id: &str) -> CoreResult<()> {
         self.call(|r| DbCmd::DeleteNode(node_id.to_string(), r)).await
     }
@@ -794,5 +819,59 @@ impl TenantRepository for SqliteStore {
     }
     async fn find_account(&self, by: AccountKey, value: &str) -> CoreResult<Option<Account>> {
         self.call(|r| DbCmd::FindAccount(by, value.to_string(), r)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rackdeck_core::TlsState;
+
+    #[tokio::test]
+    async fn removing_a_machine_retires_its_key_and_prunes_its_assignments() {
+        let store = SqliteStore::open(":memory:").unwrap();
+        store
+            .set_agent_key_hash("removed", "old-key")
+            .await
+            .unwrap();
+        for (name, node_ids) in [
+            ("shared", vec!["keep", "removed"]),
+            ("private", vec!["removed"]),
+        ] {
+            store
+                .upsert_secret(Secret {
+                    name: name.into(),
+                    sealed: "encrypted".into(),
+                    node_ids: node_ids.into_iter().map(str::to_string).collect(),
+                    updated_at: 0,
+                })
+                .await
+                .unwrap();
+        }
+        for id in ["keep", "removed"] {
+            store
+                .upsert_route(ConnectRoute {
+                    id: id.into(),
+                    host: format!("{id}.example"),
+                    node_id: id.into(),
+                    target_app: "test".into(),
+                    target_port: 8080,
+                    tls: TlsState::Valid,
+                    require_auth: true,
+                    bytes_24h: 0,
+                })
+                .await
+                .unwrap();
+        }
+        store.delete_node("removed").await.unwrap();
+
+        assert!(store.agent_key_removed("old-key").await.unwrap());
+        assert!(store.agent_key_hash("removed").await.unwrap().is_none());
+        let routes = store.list_routes().await.unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].node_id, "keep");
+        let secrets = store.list_secrets().await.unwrap();
+        assert!(secrets[0].node_ids.is_empty());
+        assert_eq!(secrets[1].node_ids, ["keep"]);
     }
 }

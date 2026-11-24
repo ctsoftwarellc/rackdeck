@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State};
+use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -16,12 +18,11 @@ use rackdeck_core::{
     RouteRepository, TelemetrySample, TlsState, TokenRepository, TokenScope,
 };
 use rackdeck_discovery::create_pairing_invitation;
-use rackdeck_protocol::{AgentCommandResult, ClientWsCommand, ServerWsEvent};
+use rackdeck_protocol::{AgentCommandResult, AgentOutput, ClientWsCommand, ServerWsEvent};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, Mutex, RwLock};
-use tower_http::cors::CorsLayer;
 
 mod agent_bus;
 pub mod seal;
@@ -64,6 +65,8 @@ pub struct ApiState {
     /// Machines that found this dashboard on the home network and are waiting for the owner to click Allow.
     /// Keyed by the agent's public key (hex).
     pub join_requests: Arc<RwLock<HashMap<String, JoinRequest>>>,
+    pub ignored_join_keys: Arc<Mutex<HashMap<String, u64>>>,
+    pub agent_admission: Arc<Mutex<()>>,
     pub agent_bus: Arc<AgentBus>,
     pub owner_password: Option<String>,
     pub owner_sessions: Arc<RwLock<HashMap<String, u64>>>,
@@ -89,7 +92,12 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/secrets/{name}", axum::routing::put(put_secret).delete(delete_secret))
         .route("/api/v1/discovery/scan", post(scan_network))
         .route("/api/v1/join-token", post(issue_join_token))
-        .route("/api/v1/agent/checkin", post(agent_checkin))
+        .route(
+            "/api/v1/agent/checkin",
+            post(agent_checkin).layer(DefaultBodyLimit::max(
+                rackdeck_protocol::MAX_CHECKIN_BODY_BYTES,
+            )),
+        )
         .route("/api/v1/agent/join-check", get(join_check))
         .route("/api/v1/join-requests", get(list_join_requests))
         .route("/api/v1/join-requests/{key}", post(allow_join_request).delete(ignore_join_request))
@@ -106,8 +114,71 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/ws", get(ws_handler))
         .route("/mcp", post(mcp_handler))
         .fallback(get(serve_embedded_ui))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(
+            state.owner_password.is_none(),
+            check_origin,
+        ))
         .with_state(state)
+}
+
+async fn check_origin(State(local_only): State<bool>, request: Request, next: Next) -> Response {
+    let headers = request.headers();
+    let path = request.uri().path();
+    let mcp_bearer = path == "/mcp"
+        && headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .is_some_and(|v| !v.is_empty());
+    // The bundled TLS proxies set this header and connect over loopback.
+    let proxied_scheme = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .filter(|peer| peer.0.ip().is_loopback())
+        .and_then(|_| headers.get("x-forwarded-proto"))
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| matches!(*s, "http" | "https"));
+    let scheme = request
+        .uri()
+        .scheme_str()
+        .or(proxied_scheme)
+        .unwrap_or("http");
+    if (path == "/api/ws" || (request.method() != Method::GET && !mcp_bearer))
+        && !origin_matches(scheme, headers, local_only)
+    {
+        return err_res(CoreError::Forbidden(
+            "This request must come from the dashboard.".into(),
+        ));
+    }
+    next.run(request).await
+}
+
+fn origin_matches(scheme: &str, headers: &HeaderMap, local_only: bool) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+
+    if local_only {
+        // A browser can send a matching Host and Origin for a domain that resolves to loopback.
+        let hostname = authority.host().trim_matches(['[', ']']);
+        if !hostname
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case("localhost")
+            && !hostname
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+        {
+            return false;
+        }
+    }
+    origins.next().is_none() && origin.as_bytes() == format!("{scheme}://{host}").as_bytes()
 }
 
 fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
@@ -463,6 +534,16 @@ async fn put_secret(
             "use capital letters, digits and _ (like CLAUDE_CODE_OAUTH_TOKEN). PATH, HOME, LD_* and DYLD_* aren't allowed".into(),
         ));
     }
+    let _admission = state.agent_admission.lock().await;
+    for node_id in &body.node_ids {
+        match state.fleet_repo.get_node(node_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return err_res(CoreError::NotFound(format!("No machine called {node_id}.")))
+            }
+            Err(e) => return err_res(e),
+        }
+    }
     let sk = state.signing_key.to_bytes();
     let existing = match state.fleet_repo.list_secrets().await {
         Ok(list) => list.into_iter().find(|s| s.name == name),
@@ -529,10 +610,13 @@ async fn remove_node(
     if node_id == state.local_node_id {
         return err_res(CoreError::InvalidInput("can't remove the machine running the dashboard".into()));
     }
+    let _admission = state.agent_admission.lock().await;
     if let Err(e) = state.fleet_repo.delete_node(&node_id).await {
         return err_res(e);
     }
     state.remote_apps.write().await.remove(&node_id);
+    state.agent_bus.forget(&node_id).await;
+    let _ = state.ws_tx.send(fleet_snapshot(&state).await);
     let ev = AuditEvent {
         id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
         ts: now_unix_secs(),
@@ -716,6 +800,29 @@ struct AgentCheckinBody {
     agent_key: Option<String>,
     #[serde(default)]
     secrets_version: Option<String>,
+    #[serde(default)]
+    timestamp: Option<u64>,
+    #[serde(default)]
+    join_request_only: bool,
+}
+
+fn machine_already_joined(name: &str) -> CoreError {
+    CoreError::Forbidden(format!(
+        "A machine called {name} is already joined. Remove it on its page first, then try again."
+    ))
+}
+
+fn check_node_available(
+    name: &str,
+    has_node: bool,
+    stored: Option<&str>,
+    key: &str,
+) -> rackdeck_core::CoreResult<()> {
+    match stored {
+        Some(stored) if stored == key => Ok(()),
+        None if !has_node => Ok(()),
+        _ => Err(machine_already_joined(name)),
+    }
 }
 
 async fn list_join_requests(State(state): State<ApiState>, headers: HeaderMap) -> Response {
@@ -724,7 +831,7 @@ async fn list_join_requests(State(state): State<ApiState>, headers: HeaderMap) -
     }
     let now = now_unix_secs();
     let mut reqs = state.join_requests.write().await;
-    reqs.retain(|_, r| now - r.at < 900);
+    reqs.retain(|_, r| now.saturating_sub(r.at) < 900);
     let mut list: Vec<JoinRequest> = reqs.values().cloned().collect();
     list.sort_by_key(|r| r.at);
     Json(serde_json::json!({ "requests": list })).into_response()
@@ -735,13 +842,33 @@ async fn allow_join_request(State(state): State<ApiState>, headers: HeaderMap, P
     if let Err(r) = require_owner_only(&state, &headers).await {
         return r;
     }
-    let Some(req) = state.join_requests.write().await.remove(&key) else {
+    let _admission = state.agent_admission.lock().await;
+    let Some(req) = state
+        .join_requests
+        .write()
+        .await
+        .remove(&key)
+        .filter(|r| now_unix_secs().saturating_sub(r.at) < 900)
+    else {
         return err_res(CoreError::NotFound("that request expired; run the install command on the machine again".into()));
     };
-    if req.node_id == state.local_node_id {
-        return err_res(CoreError::Forbidden("that machine id belongs to the controller itself".into()));
+    let result = async {
+        let node = state.fleet_repo.get_node(&req.node_id).await?;
+        let stored = state.fleet_repo.agent_key_hash(&req.node_id).await?;
+        let want = format!("x25519:{}", req.key);
+        check_node_available(
+            node.as_ref().map_or(&req.name, |n| &n.name),
+            node.is_some(),
+            stored.as_deref(),
+            &want,
+        )?;
+        state
+            .fleet_repo
+            .set_agent_key_hash(&req.node_id, &want)
+            .await
     }
-    if let Err(e) = state.fleet_repo.set_agent_key_hash(&req.node_id, &format!("x25519:{}", req.key)).await {
+    .await;
+    if let Err(e) = result {
         return err_res(e);
     }
     let ev = AuditEvent {
@@ -762,7 +889,14 @@ async fn ignore_join_request(State(state): State<ApiState>, headers: HeaderMap, 
     if let Err(r) = require_owner_only(&state, &headers).await {
         return r;
     }
-    state.join_requests.write().await.remove(&key);
+    let _admission = state.agent_admission.lock().await;
+    if state.join_requests.write().await.remove(&key).is_some() {
+        state
+            .ignored_join_keys
+            .lock()
+            .await
+            .insert(key, now_unix_secs());
+    }
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
@@ -794,62 +928,138 @@ async fn secrets_for(state: &ApiState, node_id: &str) -> rackdeck_core::CoreResu
 /// Check-ins come two ways. Sealed (X-Rackdeck-Seal header): encrypted both ways and tied to the
 /// agent's own key; the only way secrets are delivered. Legacy bearer: pre-0.2.4 agents.
 async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
-    let seal_hdr = headers.get("x-rackdeck-seal").and_then(|v| v.to_str().ok());
-    let (plain, reply_key, agent_pub) = match seal_hdr {
-        Some(h) => {
-            let opened = hex::decode(raw.trim_ascii())
-                .ok()
-                .and_then(|ct| seal::open_request(&controller_channel_secret(&state), h, &ct));
-            match opened {
-                Some((a, pt, k)) => (pt, Some(k), Some(a)),
-                None => return err_res(CoreError::Unauthorized("couldn't open sealed check-in".into())),
-            }
+    let opened = if let Some(header) = headers.get("x-rackdeck-seal") {
+        let Some(opened) = header.to_str().ok().and_then(|h| {
+            seal::open_request(
+                &controller_channel_secret(&state),
+                h,
+                &hex::decode(raw.trim_ascii()).ok()?,
+            )
+        }) else {
+            return err_res(CoreError::Unauthorized(
+                "couldn't open sealed check-in".into(),
+            ));
+        };
+        Some(opened)
+    } else {
+        None
+    };
+    let mut body: AgentCheckinBody =
+        match serde_json::from_slice(opened.as_ref().map_or(raw.as_ref(), |r| &r.plain)) {
+            Ok(b) => b,
+            Err(e) => return err_res(CoreError::InvalidInput(format!("bad check-in: {e}"))),
+        };
+    let now = now_unix_secs();
+    if let Some(request) = &opened {
+        if body.timestamp.is_some_and(|ts| now.abs_diff(ts) > 300) {
+            return err_res(CoreError::Unauthorized(
+                "Check the clock on this machine and the dashboard.".into(),
+            ));
         }
-        None => (raw.to_vec(), None, None),
-    };
-    let body: AgentCheckinBody = match serde_json::from_slice(&plain) {
-        Ok(b) => b,
-        Err(e) => return err_res(CoreError::InvalidInput(format!("bad check-in: {e}"))),
-    };
+        if !state
+            .agent_bus
+            .record_seal(request.agent, request.ephemeral)
+            .await
+        {
+            return err_res(CoreError::Unauthorized(
+                "Repeated check-in or too many recent check-ins.".into(),
+            ));
+        }
+    }
 
+    let _admission = state.agent_admission.lock().await;
     if body.node.id == state.local_node_id {
         return err_res(CoreError::Forbidden(
             "that machine id belongs to the controller itself".into(),
         ));
     }
+    let node = match state.fleet_repo.get_node(&body.node.id).await {
+        Ok(node) => node,
+        Err(e) => return err_res(e),
+    };
     let stored = match state.fleet_repo.agent_key_hash(&body.node.id).await {
         Ok(h) => h,
         Err(e) => return err_res(e),
     };
+    let name = node.as_ref().map_or(&body.node.name, |n| &n.name);
     let sha = |k: &str| hex::encode(Sha256::digest(k.as_bytes()));
     let mut issued_agent_key: Option<String> = None;
     let mut joined = false;
 
-    if let Some(a) = agent_pub {
-        let want = format!("x25519:{}", hex::encode(a));
-        if stored.as_deref() != Some(want.as_str()) {
-            let upgrading = matches!((&body.agent_key, &stored), (Some(k), Some(h)) if &sha(k) == h);
-            joined = !upgrading;
-            if !upgrading && body.join_token.is_none() {
-                // Found us on the home network: wait for the owner to click Allow.
-                let key = hex::encode(a);
-                let now = now_unix_secs();
-                let mut reqs = state.join_requests.write().await;
-                reqs.retain(|_, r| now - r.at < 900);
-                if reqs.len() < 20 || reqs.contains_key(&key) {
-                    let ip = body.node.lan_ip.clone().or(body.node.tailscale_ip.clone());
-                    let code = seal::pair_code(&seal::public(&controller_channel_secret(&state)), &a);
-                    let r = JoinRequest { key: key.clone(), node_id: body.node.id.clone(), name: body.node.name.clone(), os: body.node.os.clone(), ip, code, at: now };
-                    reqs.insert(key, r);
+    if let Some(request) = &opened {
+        let key = hex::encode(request.agent);
+        let want = format!("x25519:{key}");
+        if stored.as_deref() != Some(&want) {
+            match state.fleet_repo.agent_key_removed(&want).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    return err_res(CoreError::Forbidden(
+                        "This machine was removed from the dashboard.".into(),
+                    ))
                 }
-                return (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "waiting for approval", "pending": true }))).into_response();
+                Err(e) => return err_res(e),
             }
-            if !upgrading && !take_join_token(&state, body.join_token.as_deref().unwrap_or_default()).await {
-                return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
+            let mut ignored = state.ignored_join_keys.lock().await;
+            ignored.retain(|_, at| now.saturating_sub(*at) < 1800);
+            if ignored.contains_key(&key) {
+                return err_res(CoreError::Forbidden(
+                    "This join request was ignored on the dashboard.".into(),
+                ));
+            }
+            drop(ignored);
+
+            let upgrading = matches!((&body.agent_key, &stored), (Some(k), Some(h)) if !h.starts_with("x25519:") && &sha(k) == h);
+            if !upgrading {
+                if let Err(e) = check_node_available(name, node.is_some(), stored.as_deref(), &want)
+                {
+                    return err_res(e);
+                }
+                let mut reqs = state.join_requests.write().await;
+                reqs.retain(|_, r| now.saturating_sub(r.at) < 900);
+                if reqs.get(&key).is_some_and(|r| r.node_id != body.node.id) {
+                    return err_res(CoreError::Forbidden(
+                        "This key already has a join request for a different machine ID.".into(),
+                    ));
+                }
+                if body.join_request_only || body.join_token.is_none() {
+                    if reqs.len() >= 20 && !reqs.contains_key(&key) {
+                        return err_res(CoreError::Forbidden("Too many machines waiting. Try again after reviewing requests on the dashboard.".into()));
+                    }
+                    reqs.entry(key.clone()).or_insert_with(|| JoinRequest {
+                        key: key.clone(),
+                        node_id: body.node.id.clone(),
+                        name: body.node.name.clone(),
+                        os: body.node.os.clone(),
+                        ip: body.node.lan_ip.clone().or(body.node.tailscale_ip.clone()),
+                        code: seal::pair_code(
+                            &seal::public(&controller_channel_secret(&state)),
+                            &request.agent,
+                        ),
+                        at: now,
+                    });
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(
+                            serde_json::json!({ "error": "waiting for approval", "pending": true }),
+                        ),
+                    )
+                        .into_response();
+                }
+                if !take_join_token(&state, body.join_token.as_deref().unwrap_or_default()).await {
+                    return err_res(CoreError::Unauthorized(
+                        "invalid or expired join token".into(),
+                    ));
+                }
+                reqs.remove(&key);
+                joined = true;
             }
             if let Err(e) = state.fleet_repo.set_agent_key_hash(&body.node.id, &want).await {
                 return err_res(e);
             }
+        }
+        if body.join_request_only {
+            return hex::encode(seal::seal_response(&request.reply_key, br#"{"ok":true}"#))
+                .into_response();
         }
     } else {
         let bearer = headers
@@ -857,14 +1067,26 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
             .unwrap_or("");
-        if bearer.is_empty() {
+        if bearer.is_empty() || body.join_request_only {
             return err_res(CoreError::Unauthorized("missing agent bearer token".into()));
         }
-        if stored.as_deref().is_some_and(|h| h.starts_with("x25519:")) {
-            // Once a machine is on the sealed channel, a sniffed old key is useless.
-            return err_res(CoreError::Unauthorized("this machine uses encrypted check-ins".into()));
-        }
-        if stored.as_deref() != Some(sha(bearer).as_str()) {
+        let hash = sha(bearer);
+        if stored.as_deref() != Some(&hash) {
+            match state.fleet_repo.agent_key_removed(&hash).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    return err_res(CoreError::Forbidden(
+                        "This machine was removed from the dashboard.".into(),
+                    ))
+                }
+                Err(e) => return err_res(e),
+            }
+            if stored.is_some() && !bearer.starts_with("rd_join_") {
+                return err_res(CoreError::Unauthorized("invalid agent bearer key".into()));
+            }
+            if let Err(e) = check_node_available(name, node.is_some(), stored.as_deref(), &hash) {
+                return err_res(e);
+            }
             if !take_join_token(&state, bearer).await {
                 return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
             }
@@ -876,6 +1098,17 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
             }
             issued_agent_key = Some(agent_key);
             joined = true;
+        }
+    }
+
+    body.node.connect_enabled = node.as_ref().is_some_and(|n| n.connect_enabled);
+    body.node.connect_slug = node.and_then(|n| n.connect_slug);
+    for app in &mut body.apps {
+        app.node_id.clone_from(&body.node.id);
+    }
+    for result in &mut body.results {
+        if let Ok(AgentOutput::App { app }) = &mut result.result {
+            app.node_id.clone_from(&body.node.id);
         }
     }
 
@@ -921,11 +1154,14 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
         apps: all_apps,
     });
 
-    let commands = state.agent_bus.checkin(
-        &body.node.id,
-        body.results,
-        body.app_management && reply_key.is_some(),
-    ).await;
+    let commands = state
+        .agent_bus
+        .checkin(
+            &body.node.id,
+            body.results,
+            body.app_management && opened.is_some(),
+        )
+        .await;
 
     let mut res = serde_json::json!({
         "ok": true,
@@ -933,7 +1169,7 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
         "commands": commands,
         "controllerKey": hex::encode(seal::public(&controller_channel_secret(&state))),
     });
-    let Some(key) = reply_key else {
+    let Some(key) = opened.map(|r| r.reply_key) else {
         return Json(res).into_response();
     };
     // Secrets only ever travel sealed, and only when the machine's copy is out of date.
@@ -989,9 +1225,31 @@ async fn toggle_connect(
         ));
     }
 
+    let slug = match body.slug {
+        Some(slug) => Some(slug),
+        None if body.enabled => match state.fleet_repo.get_node(&state.local_node_id).await {
+            Ok(Some(node)) => Some(
+                node.connect_slug
+                    .unwrap_or_else(|| node.name.to_ascii_lowercase()),
+            ),
+            Ok(None) => return err_res(CoreError::NotFound(state.local_node_id)),
+            Err(e) => return err_res(e),
+        },
+        None => None,
+    };
+    if slug.as_deref().is_some_and(|s| {
+        s.is_empty()
+            || !s
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    }) {
+        return err_res(CoreError::InvalidInput(
+            "Use only lowercase letters, numbers, and hyphens in the Connect name.".into(),
+        ));
+    }
     let updated: Node = match state
         .fleet_repo
-        .set_connect_state(&state.local_node_id, body.enabled, body.slug)
+        .set_connect_state(&state.local_node_id, body.enabled, slug)
         .await
     {
         Ok(n) => n,
@@ -1155,6 +1413,17 @@ async fn add_route(
     };
     if let Err(e) = principal.authorize(Capability::ManageNetwork, None) {
         return err_res(e);
+    }
+    let _admission = state.agent_admission.lock().await;
+    match state.fleet_repo.get_node(&body.node_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return err_res(CoreError::NotFound(format!(
+                "No machine called {}.",
+                body.node_id
+            )))
+        }
+        Err(e) => return err_res(e),
     }
     let route = ConnectRoute {
         id: format!("rt-{}", uuid::Uuid::new_v4().simple()),
@@ -1371,19 +1640,24 @@ async fn follow_remote_logs(
     }
 }
 
+async fn fleet_snapshot(state: &ApiState) -> ServerWsEvent {
+    let nodes = state.fleet_repo.list_nodes().await.unwrap_or_default();
+    let mut apps = state.latest_apps.read().await.clone();
+    for list in state.remote_apps.read().await.values() {
+        apps.extend(list.clone());
+    }
+    ServerWsEvent::Snapshot { nodes, apps }
+}
+
 async fn handle_ui_ws(socket: WebSocket, state: ApiState, sid: Option<String>) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
+    let mut rx = state.ws_tx.subscribe();
     // Send initial snapshot immediately
-    let nodes = state.fleet_repo.list_nodes().await.unwrap_or_default();
-    let mut apps = state.latest_apps.read().await.clone();
-    for list in state.remote_apps.read().await.values() {
-        apps.extend(list.clone());
-    }
-    if let Ok(text) = serde_json::to_string(&ServerWsEvent::Snapshot { nodes, apps }) {
+    if let Ok(text) = serde_json::to_string(&fleet_snapshot(&state).await) {
         let _ = ws_tx.send(Message::Text(text.into())).await;
     }
     if let Some(sample) = state.latest_sample.read().await.clone() {
@@ -1395,7 +1669,6 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState, sid: Option<String>) {
         }
     }
 
-    let mut rx = state.ws_tx.subscribe();
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<String>(128);
     let mut log_tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
@@ -1468,7 +1741,7 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState, sid: Option<String>) {
                         let handle = tokio::spawn(async move {
                             if let Some(cid) = target.strip_prefix("docker:") {
                                 if let Ok(mut child) = Command::new("docker")
-                                    .args(["logs", "-f", "--tail", "50", cid])
+                                    .args(["logs", "-f", "--tail", "50", "--", cid])
                                     .stdout(std::process::Stdio::piped())
                                     .stderr(std::process::Stdio::piped())
                                     .kill_on_drop(true)
@@ -1698,7 +1971,11 @@ async fn install_catalog_app(state: &ApiState, principal: &Principal, args: &ser
         volumes: strs("volumes"),
         gpu: app["gpu"].as_bool().unwrap_or(false) && nvidia,
     };
-    if let Some(url) = args.get("modelServer").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) {
+    let model_server = args
+        .get("modelServer")
+        .and_then(|v| v.as_str())
+        .filter(|u| !u.is_empty());
+    if let Some(url) = model_server {
         let alt = &app["modelServer"];
         if !alt.is_object() {
             return Err(CoreError::InvalidInput(format!("{want} doesn't connect to a model server")));
@@ -1714,12 +1991,18 @@ async fn install_catalog_app(state: &ApiState, principal: &Principal, args: &ser
     }
     state.fleet_svc.deploy_app(principal, &node_id, spec).await?;
     let host = node.lan_ip.or(node.tailscale_ip).unwrap_or_else(|| node.name.clone());
+    let next = if model_server.is_some() {
+        "Create the admin account, then choose a model from your server."
+    } else if app["folder"].is_object() {
+        "Finish setup. Ask the dashboard owner to link your media folder when installing from the catalog."
+    } else {
+        app["next"].as_str().unwrap_or_default()
+    };
     Ok(format!(
-        "{} is running on {}. Open http://{host}:{}\nNext: {}",
+        "{} is running on {}. Open http://{host}:{}\nNext: {next}",
         app["name"].as_str().unwrap_or_default(),
         node.name,
         app["hostPort"],
-        app["next"].as_str().unwrap_or_default()
     ))
 }
 
@@ -1788,26 +2071,30 @@ async fn mcp_handler(
                         .map(|l| l.join("\n"))
                 }
                 "app_action" => {
-                    let node_id = args
-                        .get("nodeId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&state.local_node_id);
-                    let app_id = args.get("appId").and_then(|v| v.as_str()).unwrap_or("");
-                    let action = match args.get("action").and_then(|v| v.as_str()).unwrap_or("") {
-                        "start" => AppAction::Start,
-                        "stop" => AppAction::Stop,
-                        "restart" => AppAction::Restart,
-                        _ => {
-                            return err_res(CoreError::InvalidInput(
-                                "action must be start|stop|restart".into(),
-                            ))
-                        }
-                    };
-                    state
-                        .fleet_svc
-                        .execute_app_action(&principal, node_id, app_id, action)
-                        .await
-                        .map(|_| "ok".to_string())
+                    async {
+                        let node_id = args
+                            .get("nodeId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&state.local_node_id);
+                        let app_id = args.get("appId").and_then(|v| v.as_str()).unwrap_or("");
+                        let action = match args.get("action").and_then(|v| v.as_str()).unwrap_or("")
+                        {
+                            "start" => AppAction::Start,
+                            "stop" => AppAction::Stop,
+                            "restart" => AppAction::Restart,
+                            _ => {
+                                return Err(CoreError::InvalidInput(
+                                    "action must be start|stop|restart".into(),
+                                ))
+                            }
+                        };
+                        state
+                            .fleet_svc
+                            .execute_app_action(&principal, node_id, app_id, action)
+                            .await
+                            .map(|_| "ok".to_string())
+                    }
+                    .await
                 }
                 "remove_app" | "update_app" => async {
                     let node_id = args.get("nodeId").and_then(|v| v.as_str()).unwrap_or(&state.local_node_id);

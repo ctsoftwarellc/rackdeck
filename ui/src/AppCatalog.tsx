@@ -82,17 +82,19 @@ export function AppCatalog({ nodes, apps, installedApps, onInstalled, onCustomIm
                     const node = nodes.find((item) => item.id === entry.nodeId);
                     return node ? [{ entry, node }] : [];
                   });
+                const missing = nodes.filter((node) => !installed.some((item) => item.node.id === node.id));
                 return (
                   <article className="card card-pad catalog-app" key={app.id}>
                     <h3 className="card-title">{app.name}</h3>
                     <p>{app.blurb}</p>
                     <div className="catalog-actions">
-                      {installed.length ? installed.map(({ entry, node }) => (
+                      {installed.map(({ entry, node }) => (
                         <div className="catalog-installed" key={node.id}>
                           <span>Installed on {node.name}</span>
                           <OpenApp node={node} port={entry.ports.includes(app.hostPort) ? app.hostPort : entry.ports[0] ?? app.hostPort} />
                         </div>
-                      )) : (
+                      ))}
+                      {(!installed.length || missing.some((node) => !installationBlock(node))) && (
                         <button type="button" className="btn btn-primary" aria-label={"Install " + app.name}
                           onClick={() => setSelected(app)}>Install</button>
                       )}
@@ -128,7 +130,9 @@ function InstallApp({ app, nodes, apps, onClose, onInstalled }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [installedOn, setInstalledOn] = useState<Node | null>(null);
-  const node = nodes.find((item) => item.id === nodeId) ?? (nodes.length === 1 ? nodes[0] : undefined);
+  const targets = nodes.filter((node) => !apps.some((entry) =>
+    entry.nodeId === node.id && entry.name === app.id && (entry.type === "docker" || entry.type === "compose")));
+  const node = targets.find((item) => item.id === nodeId) ?? (targets.length === 1 ? targets[0] : undefined);
   const blocked = installationBlock(node);
   const modelVariant = useModelServer ? app.modelServer : undefined;
   const servers = modelVariant ? modelServers(apps, nodes) : [];
@@ -232,7 +236,7 @@ function InstallApp({ app, nodes, apps, onClose, onInstalled }: {
                   setError("");
                 }}>
                 <option value="" disabled>Choose a computer</option>
-                {nodes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
+                {targets.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
               </select>
             </div>
             {app.folder && (

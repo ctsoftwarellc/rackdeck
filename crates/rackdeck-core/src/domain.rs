@@ -183,9 +183,19 @@ pub struct ManagedApp {
     pub can_update: Option<bool>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<AppStorage>,
     pub ports: Vec<u16>,
     pub domains: Vec<AppDomain>,
     pub usage: AppUsage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStorage {
+    pub named_volumes: Vec<String>,
+    pub has_anonymous_volumes: bool,
+    pub has_folders: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

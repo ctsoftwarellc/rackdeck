@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rackdeck_core::{AppActionResult, CoreError, CoreResult, DeploySpec};
+use rackdeck_core::{AppActionResult, AppStorage, CoreError, CoreResult, DeploySpec};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::process::Command;
@@ -33,6 +33,25 @@ pub async fn docker(args: &[&str], seconds: u64) -> CoreResult<String> {
     } else {
         message.into()
     }))
+}
+
+fn volume_missing(message: &str, name: &str) -> bool {
+    message == format!("Error response from daemon: get {name}: no such volume")
+}
+
+pub fn require_new_volume(name: &str, inspected: CoreResult<String>) -> CoreResult<()> {
+    if name.starts_with('/') {
+        return Err(CoreError::Forbidden(
+            "Only the owner can link a folder from the machine.".into(),
+        ));
+    }
+    match inspected {
+        Ok(_) => Err(CoreError::Forbidden(format!(
+            "Storage {name} already exists. Choose a new volume name."
+        ))),
+        Err(CoreError::Runtime(message)) if volume_missing(&message, name) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn pull_image(image: &str) -> CoreResult<()> {
@@ -89,6 +108,8 @@ struct Container {
     state: Value,
     config: Value,
     host_config: Value,
+    #[serde(default)]
+    restart_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -114,7 +135,8 @@ async fn inspect_container(id: &str) -> CoreResult<Container> {
 
 pub async fn remove_container(id: &str, delete_data: bool) -> CoreResult<AppActionResult> {
     if !delete_data {
-        docker(&["rm", "-f", "--", id], 12).await?;
+        docker(&["stop", "-t", "10", "--", id], 15).await?;
+        docker(&["rm", "--", id], 12).await?;
         return Ok(AppActionResult::Done);
     }
 
@@ -127,32 +149,31 @@ pub async fn remove_container(id: &str, delete_data: bool) -> CoreResult<AppActi
         .collect();
     mounts.sort_unstable();
     mounts.dedup();
-    let mut volumes = Vec::new();
+    docker(&["rm", "-fv", "--", &container.id], 12).await?;
     if !mounts.is_empty() {
-        let mut args = vec!["volume", "inspect", "--"];
-        args.extend(mounts);
-        let json = docker(&args, 4).await?;
-        volumes = serde_json::from_str::<Vec<Value>>(&json)
-            .map_err(|_| CoreError::Runtime("Could not read the app's Docker volumes.".into()))?;
-    }
-    docker(&["rm", "-f", "--", &container.id], 12).await?;
-    let mut args = vec!["volume", "rm", "--"];
-    args.extend(
-        volumes
-            .iter()
-            .filter(|volume| {
-                volume["Labels"]
-                    .get("com.docker.volume.anonymous")
-                    .is_none()
-            })
-            .filter_map(|volume| volume["Name"].as_str()),
-    );
-    if args.len() > 3 {
-        docker(&args, 10).await.map_err(|e| {
-            CoreError::Runtime(format!("App removed. Some data could not be deleted. {e}"))
-        })?;
+        // A replacement may have reattached an anonymous volume by its generated name.
+        let mut args = vec!["volume", "rm", "--"];
+        args.extend(mounts.iter().copied());
+        match docker(&args, 10).await {
+            Ok(_) => {}
+            Err(CoreError::Runtime(message)) if message.lines().all(|line| {
+                mounts.iter().any(|name| {
+                    volume_missing(line, name) || line == format!("Error response from daemon: remove {name}: no such volume")
+                })
+            }) => {}
+            Err(e) => return Err(CoreError::Runtime(format!("App removed. Some data could not be deleted. {e}"))),
+        }
     }
     Ok(AppActionResult::Done)
+}
+
+fn mount_destination(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/"
+    } else {
+        trimmed
+    }
 }
 
 fn replacement_args(
@@ -181,8 +202,9 @@ fn replacement_args(
     // Also carry over volumes Docker added from the old image's VOLUME instructions.
     for mount in old.mounts.iter().filter(|m| m.kind == "volume") {
         if spec.volumes.iter().any(|v| {
-            v.split_once(':')
-                .is_some_and(|(_, dst)| dst == mount.destination)
+            v.split_once(':').is_some_and(|(_, dst)| {
+                mount_destination(dst) == mount_destination(&mount.destination)
+            })
         }) {
             continue;
         }
@@ -196,6 +218,37 @@ fn replacement_args(
     }
     args.extend(["--".into(), image.into()]);
     Ok(Some(args))
+}
+
+async fn wait_for_replacement(id: &str) -> CoreResult<()> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let started = Instant::now();
+        loop {
+            let container = inspect_container(id).await?;
+            let running = container.state["Status"].as_str() == Some("running");
+            let healthcheck = container.config["Healthcheck"]["Test"]
+                .get(0)
+                .and_then(Value::as_str)
+                .is_some_and(|test| test != "NONE");
+            if healthcheck {
+                if running && container.state["Health"]["Status"].as_str() == Some("healthy") {
+                    return Ok(());
+                }
+            } else {
+                if !running || container.restart_count > 0 {
+                    return Err(CoreError::Runtime("The new app stopped or restarted during startup.".into()));
+                }
+                if started.elapsed() >= Duration::from_secs(10) {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        CoreError::Runtime("The new app did not pass its startup check within 60 seconds.".into())
+    })?
 }
 
 pub async fn update_container(id: &str) -> CoreResult<AppActionResult> {
@@ -247,21 +300,12 @@ pub async fn update_container(id: &str) -> CoreResult<AppActionResult> {
         docker(&["rename", "--", &old.id, &backup], 4).await?;
         docker(&["rename", "--", &new_id, name], 4).await?;
         docker(&["start", "--", &new_id], 10).await?;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let state = inspect_container(&new_id).await?.state;
-        if state["Status"].as_str() != Some("running")
-            || state["Health"]["Status"].as_str() == Some("unhealthy")
-        {
-            return Err(CoreError::Runtime(
-                "The new container stopped during startup.".into(),
-            ));
-        }
-        Ok(())
+        wait_for_replacement(&new_id).await
     }
     .await;
 
     if let Err(error) = swap {
-        let cleanup = docker(&["rm", "-f", "--", &new_id], 5).await;
+        let cleanup = docker(&["rm", "-fv", "--", &new_id], 5).await;
         let restore = async {
             let current = inspect_container(&old.id).await?;
             if current.name != old.name {
@@ -288,95 +332,204 @@ pub async fn update_container(id: &str) -> CoreResult<AppActionResult> {
     Ok(AppActionResult::Updated)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct ContainerDetails {
+    id: String,
+    image: String,
+    mounts: Vec<Mount>,
+}
+
+pub async fn container_details(ids: &[&str]) -> HashMap<String, ContainerDetails> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+    let mut args = vec![
+        "container",
+        "inspect",
+        "--format",
+        r#"{"Id":{{json .Id}},"Image":{{json .Image}},"Mounts":{{json .Mounts}}}"#,
+        "--",
+    ];
+    args.extend_from_slice(ids);
+    let Ok(output) = docker(&args, 4).await else {
+        return HashMap::new();
+    };
+    output
+        .lines()
+        .filter_map(|line| {
+            let details: ContainerDetails = serde_json::from_str(line).ok()?;
+            Some((details.id.chars().take(12).collect(), details))
+        })
+        .collect()
+}
+
+pub async fn anonymous_volumes() -> Option<HashSet<String>> {
+    let out = docker(
+        &[
+            "volume",
+            "ls",
+            "--filter",
+            "label=com.docker.volume.anonymous",
+            "--format",
+            "{{.Name}}",
+        ],
+        4,
+    )
+    .await
+    .ok()?;
+    Some(out.lines().map(str::to_string).collect())
+}
+
+impl ContainerDetails {
+    pub fn storage(&self, anonymous: Option<&HashSet<String>>) -> Option<AppStorage> {
+        let mut storage = AppStorage {
+            named_volumes: Vec::new(),
+            has_anonymous_volumes: false,
+            has_folders: false,
+        };
+        for mount in &self.mounts {
+            match mount.kind.as_str() {
+                "bind" => storage.has_folders = true,
+                "volume" => {
+                    let name = mount.name.as_ref()?;
+                    if anonymous?.contains(name) {
+                        storage.has_anonymous_volumes = true;
+                    } else {
+                        storage.named_volumes.push(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        storage.named_volumes.sort_unstable();
+        storage.named_volumes.dedup();
+        Some(storage)
+    }
+}
+
 #[derive(Default)]
 pub struct UpdateChecks(Arc<Mutex<HashMap<String, ImageCheck>>>);
 
 struct ImageCheck {
     at: Instant,
-    outdated: HashSet<String>,
+    manifests: Option<Arc<Value>>,
 }
 
 impl UpdateChecks {
-    pub fn outdated_containers(&self, candidates: HashMap<String, Vec<String>>) -> HashSet<String> {
-        let mut checked = self.0.lock().expect("image checks");
-        let mut outdated = HashSet::new();
+    pub async fn outdated_containers(
+        &self,
+        candidates: HashMap<String, Vec<String>>,
+        containers: &HashMap<String, ContainerDetails>,
+    ) -> HashSet<String> {
+        let mut ready = Vec::new();
         let mut pending = Vec::new();
-        checked.retain(|image, check| {
-            check.at.elapsed() < CHECK_INTERVAL || candidates.contains_key(image)
-        });
-        for (image, ids) in candidates {
-            if let Some(check) = checked
-                .get(&image)
-                .filter(|c| c.at.elapsed() < CHECK_INTERVAL)
-            {
-                outdated.extend(ids.into_iter().filter(|id| check.outdated.contains(id)));
-            } else {
-                checked.insert(
-                    image.clone(),
-                    ImageCheck {
-                        at: Instant::now(),
-                        outdated: HashSet::new(),
-                    },
-                );
-                pending.push((image, ids));
+        {
+            let mut checked = self.0.lock().expect("image checks");
+            checked.retain(|image, check| {
+                check.at.elapsed() < CHECK_INTERVAL || candidates.contains_key(image)
+            });
+            for (image, ids) in candidates {
+                if let Some(check) = checked
+                    .get(&image)
+                    .filter(|c| c.at.elapsed() < CHECK_INTERVAL)
+                {
+                    if let Some(manifests) = &check.manifests {
+                        ready.push((manifests.clone(), ids));
+                    }
+                } else {
+                    checked.insert(
+                        image.clone(),
+                        ImageCheck {
+                            at: Instant::now(),
+                            manifests: None,
+                        },
+                    );
+                    pending.push(image);
+                }
             }
         }
         if !pending.is_empty() {
             let checks = self.0.clone();
             tokio::spawn(async move {
-                for (image, ids) in pending {
-                    let outdated = check_image(&image, ids).await;
+                for image in pending {
+                    // Only fetch registry metadata. Missing manifests and throttling stay quiet.
+                    let manifests = docker(&["manifest", "inspect", "--verbose", "--", &image], 10)
+                        .await
+                        .ok()
+                        .and_then(|raw| serde_json::from_str(&raw).ok())
+                        .map(Arc::new);
                     if let Some(check) = checks.lock().expect("image checks").get_mut(&image) {
-                        check.outdated = outdated;
+                        check.manifests = manifests;
                     }
                 }
             });
+        }
+
+        let mut outdated = HashSet::new();
+        let images: HashSet<_> = ready
+            .iter()
+            .flat_map(|(_, ids)| ids)
+            .filter_map(|id| containers.get(id).map(|c| c.image.as_str()))
+            .collect();
+        if images.is_empty() {
+            return outdated;
+        }
+        let mut args = vec![
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}",
+            "--",
+        ];
+        args.extend(images.iter().copied());
+        let Ok(details) = docker(&args, 4).await else {
+            return outdated;
+        };
+        let images: HashMap<_, _> = args[5..].iter().copied().zip(details.lines()).collect();
+        for (manifests, ids) in ready {
+            for id in ids {
+                if let Some(image_id) = containers.get(&id).map(|c| c.image.as_str()) {
+                    if let Some(details) = images.get(image_id) {
+                        if image_is_outdated(&manifests, image_id, details) {
+                            outdated.insert(id);
+                        }
+                    }
+                }
+            }
         }
         outdated
     }
 }
 
-async fn check_image(image: &str, ids: Vec<String>) -> HashSet<String> {
-    let mut outdated = HashSet::new();
-    // Only fetch registry metadata. Missing manifests, offline registries and throttling stay quiet.
-    let Ok(raw) = docker(&["manifest", "inspect", "--verbose", "--", image], 10).await else {
-        return outdated;
+fn image_is_outdated(manifests: &Value, image_id: &str, details: &str) -> bool {
+    let mut details = details.splitn(3, ' ');
+    let (Some(config_id), Some(platform), Some(digests)) =
+        (details.next(), details.next(), details.next())
+    else {
+        return false;
     };
-    let Ok(manifests) = serde_json::from_str::<Value>(&raw) else {
-        return outdated;
+    let Some(remote) = remote_manifest(manifests, platform) else {
+        return false;
     };
-    for id in ids {
-        let Ok(image_id) = docker(
-            &["container", "inspect", "--format", "{{.Image}}", "--", &id],
-            4,
-        )
-        .await
-        else {
-            continue;
-        };
-        let Ok(platform) = docker(
-            &[
-                "image",
-                "inspect",
-                "--format",
-                "{{.Os}}/{{.Architecture}}",
-                "--",
-                &image_id,
-            ],
-            4,
-        )
-        .await
-        else {
-            continue;
-        };
-        if remote_image_id(&manifests, &platform).is_some_and(|remote| remote != image_id) {
-            outdated.insert(id);
-        }
+    let Some(remote_config) = remote_config_digest(remote) else {
+        return false;
+    };
+    if remote_config == image_id || remote_config == config_id {
+        return false;
     }
-    outdated
+    // ponytail: image IDs are unverified on Docker Desktop's containerd store, so compare RepoDigests too.
+    let digest = remote.pointer("/Descriptor/digest").and_then(Value::as_str);
+    let digests = serde_json::from_str::<Option<Vec<String>>>(digests)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    !digests
+        .iter()
+        .any(|d| d.split_once('@').is_some_and(|(_, d)| Some(d) == digest))
 }
 
-fn remote_image_id<'a>(manifests: &'a Value, platform: &str) -> Option<&'a str> {
+fn remote_manifest<'a>(manifests: &'a Value, platform: &str) -> Option<&'a Value> {
     let (os, arch) = platform.split_once('/')?;
     let entries = manifests
         .as_array()
@@ -391,6 +544,10 @@ fn remote_image_id<'a>(manifests: &'a Value, platform: &str) -> Option<&'a str> 
     if matching.next().is_some() {
         return None; // Multiple variants of this architecture. Leave the dot off.
     }
+    Some(entry)
+}
+
+fn remote_config_digest(entry: &Value) -> Option<&str> {
     entry
         .pointer("/SchemaV2Manifest/config/digest")
         .or_else(|| entry.pointer("/OCIManifest/config/digest"))?
@@ -403,11 +560,32 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn token_deploys_require_a_missing_docker_volume() {
+        let volume = "redis-data";
+        assert!(matches!(
+            require_new_volume(volume, Ok("[]".into())),
+            Err(CoreError::Forbidden(_))
+        ));
+        assert!(require_new_volume(
+            volume,
+            Err(CoreError::Runtime(
+                "Error response from daemon: get redis-data: no such volume".into(),
+            ))
+        )
+        .is_ok());
+        assert!(require_new_volume(
+            volume,
+            Err(CoreError::Runtime("Could not connect to Docker".into()))
+        )
+        .is_err());
+    }
+
+    #[test]
     fn saved_spec_preserves_settings_when_recreating() {
         let spec: DeploySpec = serde_json::from_value(json!({
             "name": "media", "image": "example/media:stable",
             "hostPort": 8080, "containerPort": 80, "ports": ["53:53/udp"],
-            "volumes": ["media-data:/data", "/srv/movies:/movies"],
+            "volumes": ["media-data:/data/", "/srv/movies:/movies"],
             "env": { "SETTING": "text\twith\nwhitespace" }, "gpu": true
         }))
         .unwrap();
@@ -447,7 +625,7 @@ mod tests {
                 "-p",
                 "53:53/udp",
                 "-v",
-                "media-data:/data",
+                "media-data:/data/",
                 "-v",
                 "/srv/movies:/movies",
                 "--gpus",
@@ -474,17 +652,20 @@ mod tests {
               "SchemaV2Manifest": { "config": { "digest": "sha256:amd" } } }
         ]);
         assert_eq!(
-            remote_image_id(&manifests, "linux/arm64"),
+            remote_manifest(&manifests, "linux/arm64").and_then(remote_config_digest),
             Some("sha256:arm")
         );
         assert_eq!(
-            remote_image_id(&manifests, "linux/amd64"),
+            remote_manifest(&manifests, "linux/amd64").and_then(remote_config_digest),
             Some("sha256:amd")
         );
         assert_eq!(
-            remote_image_id(&manifests[0], "linux/arm64"),
+            remote_manifest(&manifests[0], "linux/arm64").and_then(remote_config_digest),
             Some("sha256:arm")
         );
-        assert_eq!(remote_image_id(&manifests, "windows/amd64"), None);
+        assert_eq!(
+            remote_manifest(&manifests, "windows/amd64").and_then(remote_config_digest),
+            None
+        );
     }
 }

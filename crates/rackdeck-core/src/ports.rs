@@ -11,7 +11,7 @@ pub trait NodeOps: Send + Sync {
     async fn inspect_node(&self) -> CoreResult<Node>;
     async fn list_apps(&self) -> CoreResult<Vec<ManagedApp>>;
     async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<AppActionResult>;
-    async fn deploy_app(&self, spec: DeploySpec) -> CoreResult<ManagedApp>;
+    async fn deploy_app(&self, spec: DeploySpec, fresh_volumes: bool) -> CoreResult<ManagedApp>;
     async fn tail_logs(&self, app_id: &str, lines: usize) -> CoreResult<Vec<String>>;
 }
 
@@ -29,7 +29,8 @@ pub trait FleetRepository: Send + Sync {
     /// sha256 hex of the key a joined agent authenticates with.
     async fn agent_key_hash(&self, node_id: &str) -> CoreResult<Option<String>>;
     async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()>;
-    /// Forget a machine and its agent key, so its agent can't check in again.
+    async fn agent_key_removed(&self, key_hash: &str) -> CoreResult<bool>;
+    /// Forget a machine, retire its agent key and remove its route and secret assignments.
     async fn delete_node(&self, node_id: &str) -> CoreResult<()>;
     async fn list_secrets(&self) -> CoreResult<Vec<Secret>>;
     async fn upsert_secret(&self, secret: Secret) -> CoreResult<()>;
@@ -91,7 +92,17 @@ pub trait DiscoveryPort: Send + Sync {
 /// Runs app operations on an enrolled remote agent instead of the controller's own machine.
 #[async_trait]
 pub trait RemoteDispatch: Send + Sync {
-    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<AppActionResult>;
-    async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp>;
+    async fn app_action(
+        &self,
+        node_id: &str,
+        app_id: &str,
+        action: AppAction,
+    ) -> CoreResult<AppActionResult>;
+    async fn deploy_app(
+        &self,
+        node_id: &str,
+        spec: DeploySpec,
+        fresh_volumes: bool,
+    ) -> CoreResult<ManagedApp>;
     async fn tail_logs(&self, node_id: &str, app_id: &str, lines: usize) -> CoreResult<Vec<String>>;
 }

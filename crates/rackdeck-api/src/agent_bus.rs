@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use rackdeck_core::{
@@ -11,7 +11,49 @@ use tokio::sync::{oneshot, Mutex};
 
 /// Agents poll every 2s; anything quieter than this is treated as offline.
 const OFFLINE_AFTER_SECS: u64 = 15;
-const IMAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(990);
+const IMAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(1050);
+const REPLAY_TTL: Duration = Duration::from_secs(601);
+const MAX_SEEN_CHECKINS: usize = 65_536;
+
+type SealedCheckin = ([u8; 32], [u8; 32]);
+
+#[derive(Default)]
+struct SeenCheckins {
+    keys: HashSet<SealedCheckin>,
+    expiry: VecDeque<(Instant, SealedCheckin)>,
+}
+
+impl SeenCheckins {
+    fn record(&mut self, key: SealedCheckin, now: Instant) -> bool {
+        while self
+            .expiry
+            .front()
+            .is_some_and(|&(expires, _)| expires <= now)
+        {
+            let (_, expired) = self.expiry.pop_front().unwrap();
+            self.keys.remove(&expired);
+        }
+        // Fail closed at capacity so a burst cannot evict a still-valid check-in.
+        if self.keys.len() >= MAX_SEEN_CHECKINS || !self.keys.insert(key) {
+            return false;
+        }
+        self.expiry.push_back((now + REPLAY_TTL, key));
+        true
+    }
+}
+
+fn needs_app_management(op: &AgentOp) -> bool {
+    match op {
+        AgentOp::AppAction {
+            action: AppAction::Remove { .. } | AppAction::Update,
+            ..
+        } => true,
+        AgentOp::Deploy { spec, .. } => {
+            spec.gpu || !spec.ports.is_empty() || !spec.volumes.is_empty()
+        }
+        _ => false,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Checkin {
@@ -24,11 +66,31 @@ struct Checkin {
 #[derive(Default)]
 pub struct AgentBus {
     queued: Mutex<HashMap<String, Vec<AgentCommand>>>,
-    waiting: Mutex<HashMap<String, oneshot::Sender<Result<AgentOutput, String>>>>,
+    waiting: Mutex<HashMap<String, oneshot::Sender<CoreResult<AgentOutput>>>>,
     last_seen: Mutex<HashMap<String, Checkin>>,
+    seen_checkins: Mutex<SeenCheckins>,
 }
 
 impl AgentBus {
+    pub(crate) async fn record_seal(&self, agent: [u8; 32], ephemeral: [u8; 32]) -> bool {
+        self.seen_checkins
+            .lock()
+            .await
+            .record((agent, ephemeral), Instant::now())
+    }
+
+    pub(crate) async fn forget(&self, node_id: &str) {
+        self.last_seen.lock().await.remove(node_id);
+        if let Some(commands) = self.queued.lock().await.remove(node_id) {
+            let mut waiting = self.waiting.lock().await;
+            for cmd in commands {
+                if let Some(tx) = waiting.remove(&cmd.id) {
+                    let _ = tx.send(Err(CoreError::NotFound(format!("{node_id} was removed."))));
+                }
+            }
+        }
+    }
+
     /// Called on every authenticated check-in: deliver finished results, return queued work.
     pub async fn checkin(
         &self,
@@ -40,15 +102,25 @@ impl AgentBus {
             .lock()
             .await
             .insert(node_id.to_string(), Checkin { at: now_unix_secs(), app_management });
-        {
-            let mut waiting = self.waiting.lock().await;
-            for r in results {
-                if let Some(tx) = waiting.remove(&r.id) {
-                    let _ = tx.send(r.result);
-                }
+        let mut commands = self.queued.lock().await.remove(node_id).unwrap_or_default();
+        let mut waiting = self.waiting.lock().await;
+        for r in results {
+            if let Some(tx) = waiting.remove(&r.id) {
+                let _ = tx.send(r.result.map_err(CoreError::Runtime));
             }
         }
-        self.queued.lock().await.remove(node_id).unwrap_or_default()
+        if !app_management {
+            commands.retain(|cmd| {
+                if !needs_app_management(&cmd.op) {
+                    return true;
+                }
+                if let Some(tx) = waiting.remove(&cmd.id) {
+                    let _ = tx.send(Err(CoreError::AgentUpgradeRequired));
+                }
+                false
+            });
+        }
+        commands
     }
 
     /// Nodes that stopped checking in. Each is returned once, then forgotten until it checks in again.
@@ -67,7 +139,8 @@ impl AgentBus {
     }
 
     async fn run(&self, node_id: &str, op: AgentOp, timeout: Duration) -> CoreResult<AgentOutput> {
-        match self.last_seen.lock().await.get(node_id).copied() {
+        let seen = self.last_seen.lock().await;
+        match seen.get(node_id).copied() {
             None => {
                 return Err(CoreError::NotFound(format!(
                     "{node_id} isn't connected to this controller"
@@ -79,13 +152,10 @@ impl AgentBus {
                     now_unix_secs().saturating_sub(checkin.at)
                 )))
             }
-            Some(checkin) => {
-                if matches!(&op, AgentOp::AppAction { action: AppAction::Remove { .. } | AppAction::Update, .. })
-                    && !checkin.app_management
-                {
-                    return Err(CoreError::AgentUpgradeRequired);
-                }
+            Some(checkin) if !checkin.app_management && needs_app_management(&op) => {
+                return Err(CoreError::AgentUpgradeRequired);
             }
+            Some(_) => {}
         }
 
         let id = format!("cmd-{}", uuid::Uuid::new_v4().simple());
@@ -97,10 +167,10 @@ impl AgentBus {
             .entry(node_id.to_string())
             .or_default()
             .push(AgentCommand { id: id.clone(), op });
+        drop(seen);
 
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(Ok(out))) => Ok(out),
-            Ok(Ok(Err(e))) => Err(CoreError::Runtime(e)),
+            Ok(Ok(result)) => result,
             _ => {
                 self.waiting.lock().await.remove(&id);
                 if let Some(q) = self.queued.lock().await.get_mut(node_id) {
@@ -154,13 +224,25 @@ impl RemoteDispatch for AgentBus {
         }
     }
 
-    async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp> {
+    async fn deploy_app(
+        &self,
+        node_id: &str,
+        spec: DeploySpec,
+        fresh_volumes: bool,
+    ) -> CoreResult<ManagedApp> {
         // Agent pulls for up to 15 min, runs for up to 60s, plus a check-in round trip.
         match self
-            .run(node_id, AgentOp::Deploy { spec }, IMAGE_OPERATION_TIMEOUT)
+            .run(
+                node_id,
+                AgentOp::Deploy {
+                    spec,
+                    fresh_volumes,
+                },
+                IMAGE_OPERATION_TIMEOUT,
+            )
             .await?
         {
-            AgentOutput::App { app } => Ok(app),
+            AgentOutput::App { app } => Ok(*app),
             _ => Err(unexpected()),
         }
     }
@@ -230,6 +312,43 @@ mod tests {
             ));
         }
         assert!(bus.checkin("node-pc", vec![], false).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn old_agents_are_not_sent_deploys_with_new_fields() {
+        let bus = AgentBus::default();
+        let node = "node-pc";
+        bus.checkin(node, vec![], false).await;
+        for extra in [
+            serde_json::json!({ "ports": ["8080:80"] }),
+            serde_json::json!({ "volumes": ["app:/data"] }),
+            serde_json::json!({ "gpu": true }),
+        ] {
+            let mut spec = serde_json::json!({ "name": "app", "image": "app" });
+            spec.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(matches!(
+                bus.deploy_app(node, serde_json::from_value(spec).unwrap(), false)
+                    .await,
+                Err(CoreError::AgentUpgradeRequired)
+            ));
+        }
+
+        let spec = serde_json::from_value(serde_json::json!({ "name": "app", "image": "app", "hostPort": 8080, "containerPort": 80 })).unwrap();
+        let cmd = async {
+            loop {
+                if let Some(cmd) = bus.checkin(node, vec![], false).await.pop() {
+                    break cmd;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let deploy = bus.deploy_app(node, spec, false);
+        tokio::select! {
+            cmd = cmd => assert!(matches!(cmd.op, AgentOp::Deploy { spec, .. } if spec.host_port == Some(8080))),
+            result = deploy => panic!("legacy deploy failed before dispatch: {result:?}"),
+        }
     }
 
     #[tokio::test]

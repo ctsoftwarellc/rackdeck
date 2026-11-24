@@ -69,23 +69,6 @@ if ! curl -fsSL "$URL" -o "${TMP}/rackdeck.tar.gz"; then
 fi
 tar -xzf "${TMP}/rackdeck.tar.gz" -C "$TMP"
 
-mkdir -p "$INSTALL_DIR" 2>/dev/null || $SUDO mkdir -p "$INSTALL_DIR"
-if [ -w "$INSTALL_DIR" ]; then
-  install -m 0755 "${TMP}/rackdeck" "$BIN"
-else
-  $SUDO install -m 0755 "${TMP}/rackdeck" "$BIN"
-fi
-echo "Installed $("$BIN" --version) to ${BIN}"
-
-if [ "$OS" = "darwin" ] && [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
-  # Keep `rackdeck` on PATH. The link points at the user-owned binary, so updates flow through.
-  if [ -w /usr/local/bin ]; then
-    ln -sf "$BIN" /usr/local/bin/rackdeck
-  else
-    $SUDO mkdir -p /usr/local/bin && $SUDO ln -sf "$BIN" /usr/local/bin/rackdeck
-  fi
-fi
-
 # Secrets from the dashboard land in the installing user's ~/.config/rackdeck/secrets.env.
 # Have their shells load it, once.
 TARGET_USER="${SUDO_USER:-$(id -un)}"
@@ -96,14 +79,44 @@ else
 fi
 [ -n "$USER_HOME" ] || USER_HOME="$HOME"
 SECRETS_FILE="${USER_HOME}/.config/rackdeck/secrets.env"
-# shellcheck disable=SC2016
-HOOK='[ -f "$HOME/.config/rackdeck/secrets.env" ] && . "$HOME/.config/rackdeck/secrets.env"'
-[ "$OS" = "darwin" ] && [ ! -f "$USER_HOME/.zshrc" ] && touch "$USER_HOME/.zshrc"
-for rc in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
-  if [ -f "$rc" ] && ! grep -q 'rackdeck/secrets.env' "$rc" 2>/dev/null; then
-    printf '\n# Rackdeck secrets\n%s\n' "$HOOK" >> "$rc" 2>/dev/null || true
+
+SECRETS_ENV="RACKDECK_SECRETS_FILE=${SECRETS_FILE}
+RACKDECK_SECRETS_OWNER=$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")"
+
+install_binary() {
+  mkdir -p "$INSTALL_DIR" 2>/dev/null || $SUDO mkdir -p "$INSTALL_DIR"
+  if [ -w "$INSTALL_DIR" ]; then
+    install -m 0755 "${TMP}/rackdeck" "$BIN"
+  else
+    $SUDO install -m 0755 "${TMP}/rackdeck" "$BIN"
   fi
-done
+  echo "Installed $("$BIN" --version) to ${BIN}"
+
+  if [ "$OS" = "darwin" ] && [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
+    # Keep `rackdeck` on PATH. The link points at the user-owned binary, so updates flow through.
+    if [ -w /usr/local/bin ]; then
+      ln -sf "$BIN" /usr/local/bin/rackdeck
+    else
+      $SUDO mkdir -p /usr/local/bin && $SUDO ln -sf "$BIN" /usr/local/bin/rackdeck
+    fi
+  fi
+
+  # Write shell startup files as their user, even when the installer runs through sudo.
+  set -- sh
+  if [ "$(id -un)" != "$TARGET_USER" ]; then
+    set -- sudo -u "$TARGET_USER" sh
+  fi
+  # shellcheck disable=SC2016
+  HOOK='[ -f "$HOME/.config/rackdeck/secrets.env" ] && . "$HOME/.config/rackdeck/secrets.env"'
+  "$@" -c '
+    [ "$1" = darwin ] && [ ! -f "$2/.zshrc" ] && touch "$2/.zshrc"
+    for rc in "$2/.bashrc" "$2/.zshrc"; do
+      if [ -f "$rc" ] && ! grep -q "rackdeck/secrets.env" "$rc" 2>/dev/null; then
+        printf "\n# Rackdeck secrets\n%s\n" "$3" >> "$rc" 2>/dev/null || true
+      fi
+    done
+  ' sh "$OS" "$USER_HOME" "$HOOK"
+}
 
 HAS_SYSTEMD=""
 if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -175,7 +188,20 @@ restart_services() {
   if [ -n "$HAS_SYSTEMD" ]; then
     for unit in rackdeck rackdeck-agent; do
       [ -f "/etc/systemd/system/${unit}.service" ] || continue
-      [ -n "$UPDATED" ] || $SUDO systemctl daemon-reload
+      [ -n "$UPDATED" ] || install_binary
+      # Keep the existing service arguments and any secrets home already configured.
+      dropin="/etc/systemd/system/${unit}.service.d/90-rackdeck-secrets.conf"
+      extra_env="/etc/rackdeck/${unit}-secrets.env"
+      service_env="/etc/rackdeck/${unit}.env"
+      if [ ! -f "$dropin" ] || [ ! -f "$extra_env" ]; then
+        if ! $SUDO grep -q '^RACKDECK_SECRETS_FILE=' "$service_env" 2>/dev/null ||
+           ! $SUDO grep -q '^RACKDECK_SECRETS_OWNER=' "$service_env" 2>/dev/null; then
+          $SUDO mkdir -p "$(dirname "$dropin")" /etc/rackdeck
+          printf '%s\n' "$SECRETS_ENV" | $SUDO sh -eu -c 'umask 077; cat > "$1"; chmod 600 "$1"' sh "$extra_env"
+          printf '[Service]\nEnvironmentFile=%s\n' "$extra_env" | $SUDO tee "$dropin" >/dev/null
+        fi
+      fi
+      $SUDO systemctl daemon-reload
       $SUDO systemctl restart "$unit"
       printf 'Updated and restarted %s.\n' "$unit"
       UPDATED=1
@@ -184,6 +210,7 @@ restart_services() {
     for label in dev.rackdeck.rackdeck dev.rackdeck.agent dev.rackdeck; do
       plist="$HOME/Library/LaunchAgents/${label}.plist"
       [ -f "$plist" ] || continue
+      [ -n "$UPDATED" ] || install_binary
       launchctl unload "$plist" 2>/dev/null || true
       launchctl load -w "$plist"
       printf 'Updated and restarted %s.\n' "$label"
@@ -203,7 +230,7 @@ if [ -n "$GUIDED" ] && [ -r /dev/tty ] && (: </dev/tty) 2>/dev/null; then
   restart_services
   [ -z "$UPDATED" ] || exit 0
   echo "Looking for Rackdeck dashboards on this network..."
-  if FOUND="$("$BIN" find)"; then
+  if FOUND="$("${TMP}/rackdeck" find)"; then
     # Replies come from the network. Keep addresses and keys safe for service files and strip terminal controls.
     DASHBOARDS="$(printf '%s\n' "$FOUND" | LC_ALL=C awk '
       $1 ~ /^http:\/\/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$/ && length($2) == 64 && $2 ~ /^[[:xdigit:]]+$/ {
@@ -235,7 +262,15 @@ if [ -n "$GUIDED" ] && [ -r /dev/tty ] && (: </dev/tty) 2>/dev/null; then
 $PICK
 PICKED
       printf 'Found %s (%s).\n' "$DASHBOARD" "$CONTROLLER"
-      ask_yes "Add this computer to it?" || exit 0
+      ask_yes "Add this computer to it?" || { echo "Nothing was installed."; exit 0; }
+      if RACKDECK_AGENT_STATE="${TMP}/agent.json" "${TMP}/rackdeck" join-request --controller "$CONTROLLER" --key "$CONTROLLER_KEY" <&3; then
+        :
+      else
+        status="$?"
+        [ "$status" -ne 3 ] || exit 0
+        echo "Could not join the dashboard. Nothing was installed." >&2
+        exit "$status"
+      fi
     else
       echo "No Rackdeck dashboard was found on this network."
       echo "If you already have one on another network, click + Add machine there and run that command here."
@@ -246,6 +281,8 @@ PICKED
   exec 3<&-
 fi
 
+install_binary
+
 start_agent() {
   AGENT_ENV="RACKDECK_AGENT_STATE=${STATE}"
   [ -n "$CONTROLLER_KEY" ] && AGENT_ENV="${AGENT_ENV}
@@ -253,12 +290,10 @@ RACKDECK_CONTROLLER_KEY=${CONTROLLER_KEY}"
   if [ -n "$HAS_SYSTEMD" ]; then
     # The service runs as root; write secrets into the user's home, owned by them.
     AGENT_ENV="${AGENT_ENV}
-RACKDECK_SECRETS_FILE=${SECRETS_FILE}
-RACKDECK_SECRETS_OWNER=$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")"
+${SECRETS_ENV}"
   fi
   if [ -n "$HAS_SYSTEMD" ] || [ "$OS" = "darwin" ]; then
     install_service rackdeck-agent "Rackdeck agent" "$AGENT_ENV" agent "$@"
-    [ -z "$ALLOW_HINT" ] || printf '%s\n' "$ALLOW_HINT"
     return
   fi
   if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -267,7 +302,6 @@ RACKDECK_SECRETS_OWNER=$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")"
     echo "  2. Run  wsl --shutdown  in Windows PowerShell, reopen Ubuntu, and run this command again." >&2
   fi
   echo "No systemd found, running in the foreground. It stops when this shell closes."
-  [ -z "$ALLOW_HINT" ] || printf '%s\n' "$ALLOW_HINT"
   RACKDECK_AGENT_STATE="$STATE" RACKDECK_CONTROLLER_KEY="$CONTROLLER_KEY" exec "$BIN" agent "$@"
 }
 
@@ -311,7 +345,6 @@ elif [ "$OS" = "darwin" ]; then
 else
   STATE="${RACKDECK_AGENT_STATE:-$HOME/.config/rackdeck/agent.json}"
 fi
-ALLOW_HINT=""
 
 if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
   # --controller can list several addresses separated by commas. Use the first one that answers.
@@ -326,7 +359,7 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
     exit 1
   fi
   # A machine that already joined has its own key, so an old join command is fine for it.
-  if ! $SUDO grep -q agentKey "$STATE" 2>/dev/null; then
+  if ! $SUDO grep -Eq '"agentKey"[[:space:]]*:[[:space:]]*"[^"]+"' "$STATE" 2>/dev/null; then
     # Send only the token's hash: this request isn't encrypted.
     if command -v sha256sum >/dev/null 2>&1; then
       TOKEN_SHA="$(printf '%s' "$JOIN_TOKEN" | sha256sum | cut -d' ' -f1)"
@@ -334,6 +367,9 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
       TOKEN_SHA="$(printf '%s' "$JOIN_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
     fi
     CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "X-Join-Check: ${TOKEN_SHA}" "${CONTROLLER}/api/v1/agent/join-check" || true)"
+    if [ "$CODE" = "401" ]; then
+      CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer ${JOIN_TOKEN}" "${CONTROLLER}/api/v1/agent/join-check" || true)"
+    fi
     if [ "$CODE" = "401" ]; then
       echo "This join command expired or was already used. Click + Add machine in the dashboard for a new one." >&2
       exit 1
@@ -344,11 +380,12 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
   start_agent --controller "${CONTROLLER},${TRIED}" --token "$JOIN_TOKEN"
 elif [ -n "$GUIDED" ] && [ -n "$CONTROLLER" ]; then
   if [ -n "$HAS_SYSTEMD" ]; then
-    CODE="$($SUDO env RACKDECK_AGENT_STATE="$STATE" "$BIN" pair-code "$CONTROLLER_KEY")"
+    $SUDO mkdir -p "$(dirname "$STATE")"
+    $SUDO install -m 0600 "${TMP}/agent.json" "$STATE"
   else
-    CODE="$(RACKDECK_AGENT_STATE="$STATE" "$BIN" pair-code "$CONTROLLER_KEY")"
+    mkdir -p "$(dirname "$STATE")"
+    install -m 0600 "${TMP}/agent.json" "$STATE"
   fi
-  ALLOW_HINT="On your dashboard, click Allow for $(hostname). Check that it shows the code $CODE."
   start_agent --controller "$CONTROLLER" --key "$CONTROLLER_KEY"
 elif [ -n "$SERVICE" ]; then
   if [ "$OS" = "darwin" ]; then
@@ -374,9 +411,14 @@ elif [ -n "$SERVICE" ]; then
   esac
   PORT="${RACKDECK_PORT:-7420}"
   case "$PORT" in *[!0-9]*) PORT=7420 ;; esac
-  install_service rackdeck "Rackdeck dashboard" "RACKDECK_PASSWORD=${RACKDECK_PASSWORD}
+  DASHBOARD_ENV="RACKDECK_PASSWORD=${RACKDECK_PASSWORD}
 RACKDECK_DB=${DB}
 RACKDECK_PORT=${PORT}"
+  if [ -n "$HAS_SYSTEMD" ]; then
+    DASHBOARD_ENV="${DASHBOARD_ENV}
+${SECRETS_ENV}"
+  fi
+  install_service rackdeck "Rackdeck dashboard" "$DASHBOARD_ENV"
   LAN_IP="$(dashboard_ip)"
   printf 'Dashboard: http://%s:%s\n' "${LAN_IP:-localhost}" "$PORT"
   if [ -n "$GENERATED" ]; then

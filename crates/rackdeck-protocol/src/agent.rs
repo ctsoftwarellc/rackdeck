@@ -1,6 +1,9 @@
 use rackdeck_core::{AppAction, DeploySpec, ManagedApp};
 use serde::{Deserialize, Serialize};
 
+/// HTTP body budget, including hex expansion for sealed check-ins.
+pub const MAX_CHECKIN_BODY_BYTES: usize = 2 * 1024 * 1024;
+
 /// Controller → agent work item, delivered in the `/api/v1/agent/checkin` response.
 /// Agents only ever dial out, so commands ride the existing check-in loop (no inbound ports).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +23,12 @@ pub enum AgentOp {
     },
     Deploy {
         spec: DeploySpec,
+        #[serde(
+            default,
+            skip_serializing_if = "std::ops::Not::not",
+            rename = "freshVolumes"
+        )]
+        fresh_volumes: bool,
     },
     #[serde(rename_all = "camelCase")]
     Logs {
@@ -34,9 +43,15 @@ pub enum AgentOp {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentOutput {
     Done,
-    AppUpdated { changed: bool },
-    App { app: ManagedApp },
-    Lines { lines: Vec<String> },
+    AppUpdated {
+        changed: bool,
+    },
+    App {
+        app: Box<ManagedApp>,
+    },
+    Lines {
+        lines: Vec<String>,
+    },
     /// New version installed, or None when already current.
     Updated { version: Option<String> },
 }

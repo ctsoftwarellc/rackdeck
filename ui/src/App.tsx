@@ -477,6 +477,7 @@ export function App() {
   const [inlineErr, setInlineErr] = useState<string | null>(null);
   const [appMessage, setAppMessage] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<ManagedApp | null>(null);
+  const [deleteAppData, setDeleteAppData] = useState(false);
   const removeDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (removeTarget && removeDialog.current && !removeDialog.current.open) {
@@ -757,6 +758,7 @@ export function App() {
 
   // Load route-specific data & auto-scan Tailnet on /network
   useEffect(() => {
+    if (!authState.checked || !authState.authed) return;
     if (route.page === "network") {
       fetch("/api/v1/connect/routes")
         .then((r) => r.json())
@@ -779,7 +781,7 @@ export function App() {
         .then((d) => setAudit(d.events ?? []))
         .catch(() => {});
     }
-  }, [route.page]);
+  }, [route.page, authState.checked, authState.authed]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -792,13 +794,13 @@ export function App() {
         setCmdOpen(false);
         setAddMachineOpen(false);
         setPairOpen(false);
-        setDeployOpen(false);
+        if (!depBusy) setDeployOpen(false);
         closeDrawer();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [depBusy]);
 
   async function runScan() {
     setScanning(true);
@@ -819,7 +821,7 @@ export function App() {
       const res = await fetch(`${JOIN_REQUESTS_URL}/${encodeURIComponent(request.key)}`, { method });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setJoinActionError(data?.error ? `${failure} ${data.error}` : failure);
+        setJoinActionError(typeof data?.error === "string" ? data.error.replace(/^forbidden: /, "") : failure);
       }
     } catch {
       setJoinActionError(failure);
@@ -1036,7 +1038,7 @@ export function App() {
       : "This app has no saved Rackdeck install settings.";
     return (
       <div className="app-controls">
-        {app.type !== "system" && (app.state === "running" ? (
+        {app.type === "docker" && (app.state === "running" ? (
           <>
             <button type="button" className="btn btn-sm" disabled={busy} onClick={() => runAppAction(app, "restart")}>Restart</button>
             <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => runAppAction(app, "stop")}>Stop</button>
@@ -1050,7 +1052,10 @@ export function App() {
               <button type="button" className="btn btn-sm" disabled={busy || !app.canUpdate}
                 onClick={() => runAppAction(app, "update")}>Update</button>
             </span>
-            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => setRemoveTarget(app)}>Remove</button>
+            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => {
+              setDeleteAppData(false);
+              setRemoveTarget(app);
+            }}>Remove</button>
           </>
         )}
         {withLogs && <button type="button" className="btn btn-sm" disabled={busy} onClick={() => openLogs(app)}>Logs</button>}
@@ -1525,6 +1530,7 @@ export function App() {
                   <div>
                     <h2 className="card-title">{request.name} wants to join</h2>
                     <p className="page-sub">{request.os} · {request.ip ?? "IP address unavailable"}</p>
+                    <p className="page-sub">Machine ID <code>{request.nodeId}</code></p>
                     <div className="pair-code">{request.code}</div>
                     <p className="page-sub">Check this matches the code on that computer.</p>
                   </div>
@@ -1880,7 +1886,7 @@ export function App() {
                                 <span style={{ fontWeight: 500 }}>{app.name}</span>
                                 {updateDot(app)}
                                 {app.ports.map((p) => (
-                                  <Copy key={p} value={`${detailNode.lanIp ?? "127.0.0.1"}:${p}`} display={`:${p}`} />
+                                  <Copy key={p} value={`${detailNode.lanIp ?? detailNode.tailscaleIp ?? "127.0.0.1"}:${p}`} display={`:${p}`} />
                                 ))}
                               </div>
                             </td>
@@ -2441,12 +2447,27 @@ export function App() {
           </div>
           <form className="card-pad" onSubmit={(e) => {
             e.preventDefault();
-            const deleteData = new FormData(e.currentTarget).has("deleteData");
             removeDialog.current?.close();
-            void runAppAction(removeTarget, "remove", deleteData);
+            void runAppAction(removeTarget, "remove", deleteAppData);
           }}>
-            <label><input type="checkbox" name="deleteData" aria-describedby="remove-app-data-help" /> Also delete its data</label>
-            <p id="remove-app-data-help">Deletes saved data in Docker. Keeps folders you linked.</p>
+            {(!removeTarget.storage || removeTarget.storage.namedVolumes.length > 0 || removeTarget.storage.hasAnonymousVolumes) && (
+              <label>
+                <input type="checkbox" checked={deleteAppData} onChange={(e) => setDeleteAppData(e.target.checked)} />
+                {" "}Also delete its data
+              </label>
+            )}
+            {removeTarget.storage ? (
+              <>
+                {removeTarget.storage.namedVolumes.length > 0 && (
+                  <p>Named volumes {removeTarget.storage.namedVolumes.join(", ")} will be {deleteAppData ? "deleted" : "kept"}.</p>
+                )}
+                {removeTarget.storage.hasAnonymousVolumes && <p>{deleteAppData ? "Docker’s unnamed volumes will be deleted." : "Docker’s unnamed volumes will be kept."}</p>}
+                {removeTarget.storage.hasFolders && <p>Linked folders will be kept.</p>}
+                {!removeTarget.storage.namedVolumes.length && !removeTarget.storage.hasFolders && !removeTarget.storage.hasAnonymousVolumes && (
+                  <p>This app keeps nothing outside itself. Removing it deletes everything.</p>
+                )}
+              </>
+            ) : <p>Deleting data removes Docker volumes. Linked folders will be kept.</p>}
             <div className="app-controls">
               <button type="button" className="btn" autoFocus onClick={() => removeDialog.current?.close()}>Cancel</button>
               <button type="submit" className="btn btn-danger">Remove</button>

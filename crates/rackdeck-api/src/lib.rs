@@ -71,6 +71,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/discovery/scan", post(scan_network))
         .route("/api/v1/join-token", post(issue_join_token))
         .route("/api/v1/agent/checkin", post(agent_checkin))
+        .route("/api/v1/agent/join-check", get(join_check))
         .route("/api/v1/pair", post(start_pairing))
         .route("/api/v1/connect", post(toggle_connect))
         .route("/api/v1/account", get(account_status))
@@ -427,6 +428,19 @@ async fn scan_network(State(state): State<ApiState>, headers: HeaderMap) -> Resp
     }
 }
 
+/// Lets the installer tell "expired join command" apart from "can't reach the dashboard". Doesn't use up the token.
+async fn join_check(State(state): State<ApiState>, headers: HeaderMap) -> StatusCode {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    match state.join_tokens.read().await.get(token) {
+        Some(&exp) if now_unix_secs() <= exp => StatusCode::NO_CONTENT,
+        _ => StatusCode::UNAUTHORIZED,
+    }
+}
+
 async fn issue_join_token(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     let principal = match resolve_principal(&headers, &state).await {
         Ok(p) => p,
@@ -446,10 +460,20 @@ async fn issue_join_token(State(state): State<ApiState>, headers: HeaderMap) -> 
         .insert(token.clone(), expires_at);
 
     let node = state.fleet_repo.get_node(&state.local_node_id).await.ok().flatten();
-    let host = node
-        .and_then(|n| n.tailscale_ip.or(n.lan_ip))
-        .unwrap_or_else(|| "127.0.0.1".into());
-    let controller_url = format!("http://{host}:{}", state.listen_port);
+    // List every address we have; the installer keeps the first one the new machine can reach
+    // (e.g. WSL often can't reach the Tailscale IP but can reach the LAN IP).
+    let mut hosts: Vec<String> = node
+        .map(|n| [n.tailscale_ip, n.lan_ip].into_iter().flatten().collect())
+        .unwrap_or_default();
+    hosts.dedup();
+    if hosts.is_empty() {
+        hosts.push("127.0.0.1".into());
+    }
+    let controller_url = hosts
+        .iter()
+        .map(|h| format!("http://{h}:{}", state.listen_port))
+        .collect::<Vec<_>>()
+        .join(",");
     let command = format!(
         "curl -fsSL https://get.rackdeck.dev | sh -s -- --controller {controller_url} --join {token}"
     );

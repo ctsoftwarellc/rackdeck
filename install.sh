@@ -147,17 +147,43 @@ PLIST
 }
 
 if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
-  echo "Joining controller at ${CONTROLLER}..."
+  # --controller can list several addresses separated by commas. Use the first one that answers.
+  TRIED="$CONTROLLER"
+  CONTROLLER=""
+  for c in $(printf '%s' "$TRIED" | tr ',' ' '); do
+    if curl -fsS -m 3 "${c}/api/v1/health" >/dev/null 2>&1; then CONTROLLER="$c"; break; fi
+  done
+  if [ -z "$CONTROLLER" ]; then
+    echo "Can't reach your Rackdeck dashboard from this machine (tried ${TRIED})." >&2
+    echo "Put this machine on the same network or tailnet as the dashboard, then run the command again." >&2
+    exit 1
+  fi
   # After the first check-in the agent uses the key in its state file; the join token is only for first contact.
   if [ "$OS" = "darwin" ]; then
     STATE="$HOME/.config/rackdeck/agent.json"  # same place earlier installs used, so the key carries over
   else
     STATE="/var/lib/rackdeck/agent.json"
   fi
+  # A machine that already joined has its own key, so an old join command is fine for it.
+  if ! $SUDO grep -q agentKey "$STATE" 2>/dev/null; then
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer ${JOIN_TOKEN}" "${CONTROLLER}/api/v1/agent/join-check" || true)"
+    if [ "$CODE" = "401" ]; then
+      echo "This join command expired or was already used. Click + Add machine in the dashboard for a new one." >&2
+      exit 1
+    fi
+  fi
+  echo "Joining controller at ${CONTROLLER}..."
+  # The working address goes first; the agent falls back to the others if it stops answering.
+  CONTROLLERS="${CONTROLLER},${TRIED}"
   if ! install_service rackdeck-agent "Rackdeck agent" "RACKDECK_AGENT_STATE=${STATE}" \
-      agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"; then
+      agent --controller "$CONTROLLERS" --token "$JOIN_TOKEN"; then
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      echo "This is WSL without systemd, so the agent stops when this window closes. To keep it running:" >&2
+      echo "  1. Add these lines to /etc/wsl.conf:  [boot]  and  systemd=true" >&2
+      echo "  2. Run  wsl --shutdown  in Windows PowerShell, reopen Ubuntu, and run this command again." >&2
+    fi
     echo "No systemd found, running in the foreground. It stops when this shell closes."
-    exec "$BIN" agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"
+    exec "$BIN" agent --controller "$CONTROLLERS" --token "$JOIN_TOKEN"
   fi
 elif [ -n "$SERVICE" ]; then
   if [ -z "${RACKDECK_PASSWORD:-}" ]; then

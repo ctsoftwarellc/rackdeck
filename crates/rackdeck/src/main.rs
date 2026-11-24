@@ -223,13 +223,18 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         save_agent_state(&state_path, &saved);
     }
     let local = Arc::new(LocalNodeAdapter::new(7420).with_node_id(saved.node_id.clone()));
-    let host_port = controller
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .split('/')
-        .next()
-        .ok_or("invalid controller url")?
-        .to_string();
+    // --controller may list several addresses (Tailscale, LAN). Stick with one until it stops answering.
+    let hosts: Vec<String> = controller
+        .split(',')
+        .filter_map(|c| {
+            let h = c.trim().trim_start_matches("http://").trim_start_matches("https://");
+            h.split('/').next().filter(|h| !h.is_empty()).map(str::to_string)
+        })
+        .collect();
+    if hosts.is_empty() {
+        return Err("invalid controller url".into());
+    }
+    let mut host_idx = 0usize;
 
     // A saved key survives restarts; the one-time join token is only a fallback for first contact.
     let mut join_token = Some(initial_token);
@@ -265,6 +270,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         let apps = local.list_apps().await.unwrap_or_default();
         let payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results }).to_string();
 
+        let host_port = hosts[host_idx].clone();
         let connect_res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             TcpStream::connect(&host_port),
@@ -274,6 +280,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         let mut stream = match connect_res {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
+                host_idx = (host_idx + 1) % hosts.len();
                 let msg = format!("cannot connect to {host_port}: {e}");
                 if last_err.as_deref() != Some(&msg) {
                     tracing::warn!("{msg} (check controller IP/port or try LAN IP if inside WSL)");
@@ -282,6 +289,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
                 continue;
             }
             Err(_) => {
+                host_idx = (host_idx + 1) % hosts.len();
                 let msg = format!("timed out connecting to {host_port} after 5s");
                 if last_err.as_deref() != Some(&msg) {
                     tracing::warn!("{msg} (Tailscale/firewall may be blocking route — try controller LAN IP)");
@@ -507,7 +515,7 @@ mod tests {
 
     async fn http_get(addr: SocketAddr, path: &str) -> String {
         let mut s = TcpStream::connect(addr).await.unwrap();
-        let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: rackdeck_session=test-sid\r\nConnection: close\r\n\r\n");
         s.write_all(req.as_bytes()).await.unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
@@ -520,7 +528,7 @@ mod tests {
             .map(|t| format!("Authorization: Bearer {t}\r\n"))
             .unwrap_or_default();
         let req = format!(
-            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{auth_hdr}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: rackdeck_session=test-sid\r\nContent-Type: application/json\r\n{auth_hdr}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         s.write_all(req.as_bytes()).await.unwrap();
@@ -543,7 +551,7 @@ mod tests {
         // 2. Start All-in-One Rackdeck Server on ephemeral port
         let server_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server_addr = server_listener.local_addr().unwrap();
-        let state = build_all_in_one_state(
+        let mut state = build_all_in_one_state(
             server_addr.port(),
             ":memory:",
             format!("ws://{relay_addr}/_rackdeck/tunnel"),
@@ -551,6 +559,9 @@ mod tests {
         )
         .await
         .unwrap();
+        // Connect requires a password, so run the test as a logged-in owner.
+        state.owner_password = Some("test-password".into());
+        state.owner_sessions.write().await.insert("test-sid".into(), u64::MAX);
         let app = build_router(state);
         tokio::spawn(async move {
             let _ = axum::serve(server_listener, app).await;

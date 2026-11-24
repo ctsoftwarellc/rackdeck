@@ -160,33 +160,118 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         .to_string();
 
     let mut bearer = initial_token;
+    let mut enrolled = false;
+    let mut last_err: Option<String> = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     tracing::info!("rackdeck agent connecting to {controller} as {}", local.callsign());
 
     loop {
         interval.tick().await;
-        let Ok(node) = local.inspect_node().await else { continue };
+        let node = match local.inspect_node().await {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("local node inspection failed: {e}");
+                continue;
+            }
+        };
         let sample = local.sample().await.ok();
         let apps = local.list_apps().await.unwrap_or_default();
         let payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps }).to_string();
 
-        if let Ok(mut stream) = TcpStream::connect(&host_port).await {
-            let req = format!(
-                "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host_port}\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                payload.len()
-            );
-            if stream.write_all(req.as_bytes()).await.is_ok() {
-                let mut raw = String::new();
-                if stream.read_to_string(&mut raw).await.is_ok() {
-                    if let Some(body) = raw.split("\r\n\r\n").nth(1) {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
-                            if let Some(k) = val.get("agentKey").and_then(|v| v.as_str()) {
-                                bearer = k.to_string();
-                                tracing::info!("enrolled with controller; persistent agent key bound");
-                            }
-                        }
-                    }
+        let connect_res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            TcpStream::connect(&host_port),
+        )
+        .await;
+
+        let mut stream = match connect_res {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                let msg = format!("cannot connect to {host_port}: {e}");
+                if last_err.as_deref() != Some(&msg) {
+                    tracing::warn!("{msg} (check controller IP/port or try LAN IP if inside WSL)");
+                    last_err = Some(msg);
                 }
+                continue;
+            }
+            Err(_) => {
+                let msg = format!("timed out connecting to {host_port} after 5s");
+                if last_err.as_deref() != Some(&msg) {
+                    tracing::warn!("{msg} (Tailscale/firewall may be blocking route — try controller LAN IP)");
+                    last_err = Some(msg);
+                }
+                continue;
+            }
+        };
+
+        let req = format!(
+            "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host_port}\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        if let Err(e) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.write_all(req.as_bytes()),
+        )
+        .await
+        {
+            let msg = format!("failed writing checkin to {host_port}: {e}");
+            if last_err.as_deref() != Some(&msg) {
+                tracing::warn!("{msg}");
+                last_err = Some(msg);
+            }
+            continue;
+        }
+
+        let mut raw = String::new();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_string(&mut raw),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                let msg = format!("failed reading response from {host_port}: {e}");
+                if last_err.as_deref() != Some(&msg) {
+                    tracing::warn!("{msg}");
+                    last_err = Some(msg);
+                }
+                continue;
+            }
+            Err(_) => {
+                let msg = format!("timed out waiting for response from {host_port}");
+                if last_err.as_deref() != Some(&msg) {
+                    tracing::warn!("{msg}");
+                    last_err = Some(msg);
+                }
+                continue;
+            }
+        }
+
+        let status_line = raw.lines().next().unwrap_or("").trim().to_string();
+        let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").trim();
+        if !status_line.contains(" 200 ") && !status_line.ends_with(" 200") {
+            let msg = format!("controller {host_port} rejected checkin: {status_line} ({body})");
+            if last_err.as_deref() != Some(&msg) {
+                tracing::warn!("{msg}");
+                last_err = Some(msg);
+            }
+            continue;
+        }
+
+        if last_err.is_some() {
+            tracing::info!("reconnected to controller {controller}");
+            last_err = None;
+        }
+
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(k) = val.get("agentKey").and_then(|v| v.as_str()) {
+                bearer = k.to_string();
+                enrolled = true;
+                tracing::info!("connected & enrolled with controller {controller} as {}", local.callsign());
+            } else if !enrolled {
+                enrolled = true;
+                tracing::info!("connected to controller {controller} as {}", local.callsign());
             }
         }
     }

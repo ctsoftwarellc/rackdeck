@@ -15,6 +15,7 @@ rackdeck-discovery = { path = "../rackdeck-discovery" }
 rackdeck-node = { path = "../rackdeck-node" }
 rackdeck-protocol = { path = "../rackdeck-protocol" }
 rackdeck-store = { path = "../rackdeck-store" }
+hex.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
 serde_json.workspace = true

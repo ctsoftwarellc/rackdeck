@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use rackdeck_api::{build_router, update, AgentBus, ApiState, AssetProvider};
+use rackdeck_api::{build_router, seal, update, AgentBus, ApiState, AssetProvider};
 use rackdeck_core::{FleetRepository, FleetService, NodeOps, NodeStatus};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
@@ -174,7 +174,16 @@ async fn mark_stale_nodes_offline(state: &ApiState) {
 #[derive(Default)]
 struct AgentState {
     node_id: String,
+    /// Pre-0.2.4 bearer key. Dropped once the controller accepts sealed check-ins.
     agent_key: Option<String>,
+    /// Controller's channel public key (hex), pinned from the join command.
+    controller_key: Option<String>,
+    /// This agent's channel secret (hex).
+    channel_secret: Option<String>,
+}
+
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    hex::decode(s).ok()?.try_into().ok()
 }
 
 fn agent_state_path() -> std::path::PathBuf {
@@ -191,7 +200,13 @@ fn save_agent_state(path: &std::path::Path, st: &AgentState) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let json = serde_json::json!({ "nodeId": st.node_id, "agentKey": st.agent_key }).to_string();
+    let json = serde_json::json!({
+        "nodeId": st.node_id,
+        "agentKey": st.agent_key,
+        "controllerKey": st.controller_key,
+        "channelSecret": st.channel_secret,
+    })
+    .to_string();
     if let Err(e) = std::fs::write(path, json) {
         tracing::warn!("couldn't save agent state to {}: {e}", path.display());
         return;
@@ -203,7 +218,11 @@ fn save_agent_state(path: &std::path::Path, st: &AgentState) {
     }
 }
 
-async fn run_remote_agent(controller: String, initial_token: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_remote_agent(
+    controller: String,
+    initial_token: String,
+    controller_key: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -214,8 +233,22 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         .map(|v| AgentState {
             node_id: v["nodeId"].as_str().unwrap_or_default().to_string(),
             agent_key: v["agentKey"].as_str().map(str::to_string),
+            controller_key: v["controllerKey"].as_str().map(str::to_string),
+            channel_secret: v["channelSecret"].as_str().map(str::to_string),
         })
         .unwrap_or_default();
+    // The join command's key wins over a saved one: running a new join command means a new controller.
+    if let Some(k) = controller_key.filter(|k| hex32(k).is_some()) {
+        if saved.controller_key.as_deref() != Some(k.as_str()) {
+            saved.controller_key = Some(k);
+            saved.channel_secret = None;
+        }
+    }
+    if saved.controller_key.is_some() && saved.channel_secret.is_none() {
+        saved.channel_secret = Some(hex::encode(seal::random32()));
+    }
+    save_agent_state(&state_path, &saved);
+    let mut secrets_version: Option<String> = None;
     if saved.node_id.is_empty() {
         // Hostname plus a random suffix, so two boxes called `ubuntu` stay separate machines.
         let base = LocalNodeAdapter::new(7420).node_id().to_string();
@@ -268,7 +301,25 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         };
         let sample = local.sample().await.ok();
         let apps = local.list_apps().await.unwrap_or_default();
-        let payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results }).to_string();
+        let mut payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results });
+        // Sealed when we know the controller's key: encrypted both ways, and the only way secrets arrive.
+        let sealing = saved
+            .controller_key
+            .as_deref()
+            .and_then(hex32)
+            .zip(saved.channel_secret.as_deref().and_then(hex32));
+        let (auth_hdr, payload, reply_key) = match sealing {
+            Some((ck, cs)) => {
+                // On first contact the join token sits in `bearer` (the legacy path takes it from `join_token`).
+                let token = join_token.clone().or_else(|| bearer.starts_with("rd_join_").then(|| bearer.clone()));
+                payload["joinToken"] = serde_json::json!(token);
+                payload["agentKey"] = serde_json::json!(saved.agent_key);
+                payload["secretsVersion"] = serde_json::json!(secrets_version);
+                let (hdr, ct, k) = seal::seal_request(&ck, &cs, payload.to_string().as_bytes());
+                (format!("X-Rackdeck-Seal: {hdr}"), hex::encode(ct), Some(k))
+            }
+            None => (format!("Authorization: Bearer {bearer}"), payload.to_string(), None),
+        };
 
         let host_port = hosts[host_idx].clone();
         let connect_res = tokio::time::timeout(
@@ -300,7 +351,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         };
 
         let req = format!(
-            "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host_port}\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            "POST /api/v1/agent/checkin HTTP/1.1\r\nHost: {host_port}\r\n{auth_hdr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
             payload.len()
         );
         if let Err(e) = tokio::time::timeout(
@@ -346,7 +397,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         let status_line = raw.lines().next().unwrap_or("").trim().to_string();
         let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").trim();
         if !status_line.contains(" 200 ") && !status_line.ends_with(" 200") {
-            if status_line.contains(" 401") {
+            if status_line.contains(" 401") && reply_key.is_none() {
                 if let Some(t) = join_token.take() {
                     tracing::info!("saved agent key was rejected, trying the join token instead");
                     bearer = t;
@@ -378,7 +429,43 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
             std::process::exit(1);
         }
 
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        let body = match reply_key {
+            Some(k) => match hex::decode(body).ok().and_then(|ct| seal::open_response(&k, &ct)) {
+                Some(pt) => String::from_utf8_lossy(&pt).into_owned(),
+                None => {
+                    tracing::warn!("couldn't open the controller's reply; is this the right controller?");
+                    continue;
+                }
+            },
+            None => body.to_string(),
+        };
+        if reply_key.is_some() && (join_token.is_some() || saved.agent_key.is_some() || !bearer.is_empty()) {
+            // Accepted on the sealed channel: the join token is spent and the old bearer key retired.
+            join_token = None;
+            bearer.clear();
+            saved.agent_key = None;
+            save_agent_state(&state_path, &saved);
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
+            if reply_key.is_none() && saved.controller_key.is_none() {
+                // Agent from before sealed check-ins: pin the key this controller reports, then switch over.
+                if let Some(k) = val.get("controllerKey").and_then(|v| v.as_str()).filter(|k| hex32(k).is_some()) {
+                    saved.controller_key = Some(k.to_string());
+                    saved.channel_secret = Some(hex::encode(seal::random32()));
+                    save_agent_state(&state_path, &saved);
+                }
+            }
+            if let Some(sec) = val.get("secrets") {
+                let vars: std::collections::BTreeMap<String, String> =
+                    serde_json::from_value(sec["vars"].clone()).unwrap_or_default();
+                match seal::write_secrets_file(&vars) {
+                    Ok(()) => {
+                        secrets_version = sec["version"].as_str().map(str::to_string);
+                        tracing::info!("secrets updated ({} set)", vars.len());
+                    }
+                    Err(e) => tracing::warn!("couldn't write secrets file: {e}"),
+                }
+            }
             let commands: Vec<AgentCommand> = val
                 .get("commands")
                 .and_then(|c| serde_json::from_value(c.clone()).ok())
@@ -449,6 +536,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).map(|s| s.as_str()) == Some("agent") {
         let mut controller = std::env::var("RACKDECK_CONTROLLER").unwrap_or_default();
         let mut token = std::env::var("RACKDECK_JOIN_TOKEN").unwrap_or_default();
+        let mut controller_key = std::env::var("RACKDECK_CONTROLLER_KEY").ok();
         let mut i = 2;
         while i < args.len() {
             match args[i].as_str() {
@@ -460,6 +548,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     token = args[i + 1].clone();
                     i += 2;
                 }
+                "--controller-key" | "--key" if i + 1 < args.len() => {
+                    controller_key = Some(args[i + 1].clone());
+                    i += 2;
+                }
                 _ => i += 1,
             }
         }
@@ -467,7 +559,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Usage: rackdeck agent --controller <http://host:7420> --token <join-token>");
             std::process::exit(2);
         }
-        return run_remote_agent(controller, token).await;
+        return run_remote_agent(controller, token, controller_key).await;
     }
 
     if let Some(cmd) = args.get(1) {

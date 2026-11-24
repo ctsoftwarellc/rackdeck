@@ -19,6 +19,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 async-trait = "0.1"
+curve25519-dalek = "4"
 axum = { version = "0.8", features = ["ws", "macros"] }
 base64 = "0.22"
 bytes = "1"
@@ -27,6 +28,7 @@ futures-util = "0.3"
 hex = "0.4"
 mime_guess = "2"
 rand = "0.8"
+ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rust-embed = { version = "8", features = ["debug-embed"] }
 serde = { version = "1", features = ["derive"] }

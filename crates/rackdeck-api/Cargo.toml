@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+curve25519-dalek.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
 hex.workspace = true
@@ -16,6 +17,7 @@ rackdeck-core = { path = "../rackdeck-core" }
 rackdeck-discovery = { path = "../rackdeck-discovery" }
 rackdeck-protocol = { path = "../rackdeck-protocol" }
 rand.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

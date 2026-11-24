@@ -751,6 +751,7 @@ version = "0.2.3"
 dependencies = [
  "axum",
  "ed25519-dalek",
+ "hex",
  "mime_guess",
  "rackdeck-api",
  "rackdeck-connect",
@@ -773,6 +774,7 @@ version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
+ "curve25519-dalek",
  "ed25519-dalek",
  "futures-util",
  "hex",
@@ -782,6 +784,7 @@ dependencies = [
  "rackdeck-discovery",
  "rackdeck-protocol",
  "rand 0.8.8",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",

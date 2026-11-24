@@ -120,6 +120,169 @@ function Help({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
+type SecretRow = { name: string; nodeIds: string[]; updatedAt: number };
+
+function SecretsCard({ nodes }: { nodes: Node[] }) {
+  const [rows, setRows] = useState<SecretRow[]>([]);
+  const [editing, setEditing] = useState<{ isNew: boolean; name: string; value: string; nodeIds: string[] } | null>(null);
+  const [err, setErr] = useState("");
+  const load = () =>
+    fetch("/api/v1/secrets")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setRows)
+      .catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+  const nodeName = (id: string) => nodes.find((n) => n.id === id)?.name ?? id;
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    setErr("");
+    const r = await fetch(`/api/v1/secrets/${encodeURIComponent(editing.name.trim())}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: editing.value || null, nodeIds: editing.nodeIds }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      setErr(d.error ?? `couldn't save (${r.status})`);
+      return;
+    }
+    setEditing(null);
+    load();
+  }
+
+  async function remove(name: string) {
+    if (!confirm(`Delete ${name}? It's removed from every machine on their next check-in.`)) return;
+    await fetch(`/api/v1/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    load();
+  }
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2 className="card-title">
+          Secrets
+          <Help title="Secrets">
+            <p>Set an environment variable once and Rackdeck puts it on the machines you pick. A common one is <span className="mono">CLAUDE_CODE_OAUTH_TOKEN</span> from <span className="mono">claude setup-token</span>, so you don't log in on every machine.</p>
+            <p>Values are encrypted in the dashboard and on the way to each machine. They land in <span className="mono">~/.config/rackdeck/secrets.env</span>, readable only by you, and new terminals load them.</p>
+            <p>Machines that joined before this feature get secrets after their next update.</p>
+          </Help>
+        </h2>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => {
+            setErr("");
+            setEditing({ isNew: true, name: "", value: "", nodeIds: nodes.map((n) => n.id) });
+          }}
+        >
+          + Add secret
+        </button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="card-pad" style={{ margin: 0, fontSize: 13, color: "var(--text-2)" }}>No secrets yet.</p>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Machines</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name}>
+                  <td className="mono">{r.name}</td>
+                  <td>{r.nodeIds.length ? r.nodeIds.map(nodeName).join(", ") : "None"}</td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => {
+                        setErr("");
+                        setEditing({ isNew: false, name: r.name, value: "", nodeIds: r.nodeIds });
+                      }}
+                    >
+                      Edit
+                    </button>{" "}
+                    <button type="button" className="btn btn-sm" onClick={() => remove(r.name)}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {editing && (
+        <div className="backdrop" onClick={() => setEditing(null)}>
+          <form className="modal" onSubmit={save} onClick={(e) => e.stopPropagation()}>
+            <div className="card-head">
+              <h2 className="card-title">{editing.isNew ? "Add secret" : `Edit ${editing.name}`}</h2>
+              <button type="button" className="btn btn-sm" onClick={() => setEditing(null)}>✕</button>
+            </div>
+            <div className="card-pad">
+              {editing.isNew && (
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <label htmlFor="secret-name">Name</label>
+                  <input
+                    id="secret-name"
+                    className="input mono"
+                    placeholder="CLAUDE_CODE_OAUTH_TOKEN"
+                    value={editing.name}
+                    onChange={(e) => setEditing({ ...editing, name: e.target.value.toUpperCase() })}
+                    required
+                    autoFocus
+                  />
+                </div>
+              )}
+              <div className="field" style={{ marginBottom: 12 }}>
+                <label htmlFor="secret-value">Value</label>
+                <input
+                  id="secret-value"
+                  className="input mono"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={editing.isNew ? "" : "Leave blank to keep the current value"}
+                  value={editing.value}
+                  onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                  required={editing.isNew}
+                />
+              </div>
+              <fieldset className="field" style={{ border: 0, padding: 0, margin: "0 0 12px" }}>
+                <legend style={{ fontSize: 12.5, marginBottom: 6 }}>Machines</legend>
+                {nodes.map((n) => (
+                  <label key={n.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginBottom: 4 }}>
+                    <input
+                      type="checkbox"
+                      checked={editing.nodeIds.includes(n.id)}
+                      onChange={(e) =>
+                        setEditing({
+                          ...editing,
+                          nodeIds: e.target.checked ? [...editing.nodeIds, n.id] : editing.nodeIds.filter((x) => x !== n.id),
+                        })
+                      }
+                    />
+                    {n.name}
+                  </label>
+                ))}
+              </fieldset>
+              {err && <p role="alert" style={{ color: "var(--crit)", fontSize: 13, margin: "0 0 12px" }}>{err}</p>}
+              <button type="submit" className="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Copy({ value, display, className }: { value: string; display?: string; className?: string }) {
   const [status, setStatus] = useState<"idle" | "ok" | "err">("idle");
   return (
@@ -1808,6 +1971,7 @@ export function App() {
             </div>
 
             <div className="stack-sections">
+              <SecretsCard nodes={nodes} />
               <section className="card card-pad">
                 <h2 className="card-title" style={{ marginBottom: 14 }}>
                   Let an AI coding tool manage your machines

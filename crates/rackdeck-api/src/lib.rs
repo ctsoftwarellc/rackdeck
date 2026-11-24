@@ -24,6 +24,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
 
 mod agent_bus;
+pub mod seal;
 pub mod update;
 pub use agent_bus::AgentBus;
 
@@ -69,6 +70,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/nodes/{node_id}/apps/{app_id}/logs", get(get_app_logs))
         .route("/api/v1/nodes/{node_id}/update", post(update_node))
         .route("/api/v1/nodes/{node_id}", axum::routing::delete(remove_node))
+        .route("/api/v1/secrets", get(list_secrets))
+        .route("/api/v1/secrets/{name}", axum::routing::put(put_secret).delete(delete_secret))
         .route("/api/v1/discovery/scan", post(scan_network))
         .route("/api/v1/join-token", post(issue_join_token))
         .route("/api/v1/agent/checkin", post(agent_checkin))
@@ -343,6 +346,105 @@ async fn run_app_action(
 }
 
 /// Update Rackdeck on one machine. Owner only: it replaces the binary and restarts the process.
+async fn require_owner_only(state: &ApiState, headers: &HeaderMap) -> Result<(), Response> {
+    match resolve_principal(headers, state).await {
+        Ok(Principal::Owner { .. }) => Ok(()),
+        Ok(_) => Err(err_res(CoreError::Forbidden("only the owner can manage secrets".into()))),
+        Err(r) => Err(r),
+    }
+}
+
+/// Names, machines and dates only. Values never leave the dashboard except sealed to a machine.
+async fn list_secrets(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    match state.fleet_repo.list_secrets().await {
+        Ok(list) => Json(
+            list.into_iter()
+                .map(|s| serde_json::json!({ "name": s.name, "nodeIds": s.node_ids, "updatedAt": s.updated_at }))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => err_res(e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PutSecretBody {
+    /// Leave out to keep the current value and only change which machines get it.
+    value: Option<String>,
+    node_ids: Vec<String>,
+}
+
+async fn put_secret(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<PutSecretBody>,
+) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    if !seal::valid_secret_name(&name) {
+        return err_res(CoreError::InvalidInput(
+            "use capital letters, digits and _ (like CLAUDE_CODE_OAUTH_TOKEN). PATH, HOME, LD_* and DYLD_* aren't allowed".into(),
+        ));
+    }
+    let sk = state.signing_key.to_bytes();
+    let existing = match state.fleet_repo.list_secrets().await {
+        Ok(list) => list.into_iter().find(|s| s.name == name),
+        Err(e) => return err_res(e),
+    };
+    let sealed = match (body.value, existing) {
+        (Some(v), _) if !v.is_empty() => seal::encrypt_at_rest(&sk, &v),
+        (_, Some(old)) => old.sealed,
+        _ => return err_res(CoreError::InvalidInput("a new secret needs a value".into())),
+    };
+    let secret = rackdeck_core::Secret { name: name.clone(), sealed, node_ids: body.node_ids, updated_at: now_unix_secs() };
+    if let Err(e) = state.fleet_repo.upsert_secret(secret).await {
+        return err_res(e);
+    }
+    secret_changed(&state, "set secret", name).await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn delete_secret(State(state): State<ApiState>, Path(name): Path<String>, headers: HeaderMap) -> Response {
+    if let Err(r) = require_owner_only(&state, &headers).await {
+        return r;
+    }
+    match state.fleet_repo.delete_secret(&name).await {
+        Ok(_) => {
+            secret_changed(&state, "delete secret", name).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => err_res(e),
+    }
+}
+
+/// Audit (name only) and refresh this machine's own secrets file. Joined machines pick up changes on their next check-in.
+async fn secret_changed(state: &ApiState, action: &str, name: String) {
+    let ev = AuditEvent {
+        id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
+        ts: now_unix_secs(),
+        actor: "you (web)".into(),
+        action: action.into(),
+        target: name,
+        ok: true,
+        reason: None,
+    };
+    let _ = state.audit_repo.append_audit(ev.clone()).await;
+    let _ = state.ws_tx.send(ServerWsEvent::Audit { ev });
+    if let Ok(vars) = secrets_for(state, &state.local_node_id).await {
+        if !vars.is_empty() || seal::secrets_file_path().exists() {
+            if let Err(e) = seal::write_secrets_file(&vars) {
+                eprintln!("rackdeck: couldn't write this machine's secrets file: {e}");
+            }
+        }
+    }
+}
+
 async fn remove_node(
     State(state): State<ApiState>,
     Path(node_id): Path<String>,
@@ -506,8 +608,10 @@ async fn issue_join_token(State(state): State<ApiState>, headers: HeaderMap) -> 
         .map(|h| format!("http://{h}:{}", state.listen_port))
         .collect::<Vec<_>>()
         .join(",");
+    // The key pins this dashboard, so the new machine's check-ins can't be read or faked on the network.
+    let key = hex::encode(seal::public(&controller_channel_secret(&state)));
     let command = format!(
-        "curl -fsSL https://get.rackdeck.dev | sh -s -- --controller {controller_url} --join {token}"
+        "curl -fsSL https://get.rackdeck.dev | sh -s -- --controller {controller_url} --join {token} --key {key}"
     );
     Json(serde_json::json!({
         "token": token,
@@ -526,62 +630,116 @@ struct AgentCheckinBody {
     apps: Vec<ManagedApp>,
     #[serde(default)]
     results: Vec<AgentCommandResult>,
+    // Only inside sealed check-ins:
+    #[serde(default)]
+    join_token: Option<String>,
+    /// Pre-0.2.4 bearer key, sent once so an updated agent can move to the sealed channel.
+    #[serde(default)]
+    agent_key: Option<String>,
+    #[serde(default)]
+    secrets_version: Option<String>,
 }
 
-async fn agent_checkin(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    Json(body): Json<AgentCheckinBody>,
-) -> Response {
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .unwrap_or("");
-    if bearer.is_empty() {
-        return err_res(CoreError::Unauthorized("missing agent bearer token".into()));
+/// One-time use. Expired tokens are dropped either way.
+async fn take_join_token(state: &ApiState, token: &str) -> bool {
+    match state.join_tokens.write().await.remove(token) {
+        Some(exp) => now_unix_secs() <= exp,
+        None => false,
     }
+}
 
-    // Authorize via either an already-enrolled agent key or a valid 15-minute join token
+fn controller_channel_secret(state: &ApiState) -> [u8; 32] {
+    seal::controller_secret(&state.signing_key.to_bytes())
+}
+
+/// Decrypted values of the secrets assigned to a machine.
+async fn secrets_for(state: &ApiState, node_id: &str) -> rackdeck_core::CoreResult<std::collections::BTreeMap<String, String>> {
+    let sk = state.signing_key.to_bytes();
+    Ok(state
+        .fleet_repo
+        .list_secrets()
+        .await?
+        .into_iter()
+        .filter(|s| s.node_ids.iter().any(|n| n == node_id))
+        .filter_map(|s| seal::decrypt_at_rest(&sk, &s.sealed).map(|v| (s.name, v)))
+        .collect())
+}
+
+/// Check-ins come two ways. Sealed (X-Rackdeck-Seal header): encrypted both ways and tied to the
+/// agent's own key; the only way secrets are delivered. Legacy bearer: pre-0.2.4 agents.
+async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+    let seal_hdr = headers.get("x-rackdeck-seal").and_then(|v| v.to_str().ok());
+    let (plain, reply_key, agent_pub) = match seal_hdr {
+        Some(h) => {
+            let opened = hex::decode(raw.trim_ascii())
+                .ok()
+                .and_then(|ct| seal::open_request(&controller_channel_secret(&state), h, &ct));
+            match opened {
+                Some((a, pt, k)) => (pt, Some(k), Some(a)),
+                None => return err_res(CoreError::Unauthorized("couldn't open sealed check-in".into())),
+            }
+        }
+        None => (raw.to_vec(), None, None),
+    };
+    let body: AgentCheckinBody = match serde_json::from_slice(&plain) {
+        Ok(b) => b,
+        Err(e) => return err_res(CoreError::InvalidInput(format!("bad check-in: {e}"))),
+    };
+
     if body.node.id == state.local_node_id {
         return err_res(CoreError::Forbidden(
             "that machine id belongs to the controller itself".into(),
         ));
     }
-    let bearer_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
-    let already_enrolled = match state.fleet_repo.agent_key_hash(&body.node.id).await {
-        Ok(h) => h.as_deref() == Some(bearer_hash.as_str()),
+    let stored = match state.fleet_repo.agent_key_hash(&body.node.id).await {
+        Ok(h) => h,
         Err(e) => return err_res(e),
     };
+    let sha = |k: &str| hex::encode(Sha256::digest(k.as_bytes()));
     let mut issued_agent_key: Option<String> = None;
+    let mut joined = false;
 
-    if !already_enrolled {
-        let valid_join = {
-            let mut joins = state.join_tokens.write().await;
-            if let Some(&exp) = joins.get(bearer) {
-                if now_unix_secs() <= exp {
-                    joins.remove(bearer);
-                    true
-                } else {
-                    joins.remove(bearer);
-                    false
-                }
-            } else {
-                false
+    if let Some(a) = agent_pub {
+        let want = format!("x25519:{}", hex::encode(a));
+        if stored.as_deref() != Some(want.as_str()) {
+            let upgrading = matches!((&body.agent_key, &stored), (Some(k), Some(h)) if &sha(k) == h);
+            joined = !upgrading;
+            if !upgrading && !take_join_token(&state, body.join_token.as_deref().unwrap_or_default()).await {
+                return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
             }
-        };
-        if !valid_join {
-            return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
+            if let Err(e) = state.fleet_repo.set_agent_key_hash(&body.node.id, &want).await {
+                return err_res(e);
+            }
         }
-        let mut raw = [0u8; 24];
-        rand::thread_rng().fill(&mut raw);
-        let agent_key = format!("rd_agent_{}", hex::encode(raw));
-        let key_hash = hex::encode(Sha256::digest(agent_key.as_bytes()));
-        if let Err(e) = state.fleet_repo.set_agent_key_hash(&body.node.id, &key_hash).await {
-            return err_res(e);
+    } else {
+        let bearer = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if bearer.is_empty() {
+            return err_res(CoreError::Unauthorized("missing agent bearer token".into()));
         }
-        issued_agent_key = Some(agent_key);
+        if stored.as_deref().is_some_and(|h| h.starts_with("x25519:")) {
+            // Once a machine is on the sealed channel, a sniffed old key is useless.
+            return err_res(CoreError::Unauthorized("this machine uses encrypted check-ins".into()));
+        }
+        if stored.as_deref() != Some(sha(bearer).as_str()) {
+            if !take_join_token(&state, bearer).await {
+                return err_res(CoreError::Unauthorized("invalid or expired join token".into()));
+            }
+            let mut raw = [0u8; 24];
+            rand::thread_rng().fill(&mut raw);
+            let agent_key = format!("rd_agent_{}", hex::encode(raw));
+            if let Err(e) = state.fleet_repo.set_agent_key_hash(&body.node.id, &sha(&agent_key)).await {
+                return err_res(e);
+            }
+            issued_agent_key = Some(agent_key);
+            joined = true;
+        }
+    }
 
+    if joined {
         let ev = AuditEvent {
             id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
             ts: now_unix_secs(),
@@ -625,12 +783,24 @@ async fn agent_checkin(
 
     let commands = state.agent_bus.checkin(&body.node.id, body.results).await;
 
-    Json(serde_json::json!({
+    let mut res = serde_json::json!({
         "ok": true,
         "agentKey": issued_agent_key,
-        "commands": commands
-    }))
-    .into_response()
+        "commands": commands,
+        "controllerKey": hex::encode(seal::public(&controller_channel_secret(&state))),
+    });
+    let Some(key) = reply_key else {
+        return Json(res).into_response();
+    };
+    // Secrets only ever travel sealed, and only when the machine's copy is out of date.
+    if let Ok(vars) = secrets_for(&state, &body.node.id).await {
+        let version = seal::secrets_version(&vars);
+        if body.secrets_version.as_deref() != Some(version.as_str()) {
+            res["secrets"] = serde_json::json!({ "version": version, "vars": vars });
+        }
+    }
+    let sealed = seal::seal_response(&key, res.to_string().as_bytes());
+    ([(header::CONTENT_TYPE, "text/plain")], hex::encode(sealed)).into_response()
 }
 
 async fn start_pairing(State(state): State<ApiState>, headers: HeaderMap) -> Response {

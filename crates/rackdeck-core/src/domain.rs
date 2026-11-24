@@ -187,6 +187,16 @@ pub struct DiscoveredPeer {
     pub in_fleet: bool,
 }
 
+/// An environment variable pushed to chosen machines. `sealed` is the value encrypted at rest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Secret {
+    pub name: String,
+    pub sealed: String,
+    pub node_ids: Vec<String>,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectRoute {

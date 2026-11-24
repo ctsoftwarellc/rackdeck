@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     Account, AccountKey, AccessTokenRecord, AppAction, AuditEvent, ConnectRoute, ConnectTenant, CoreResult, DeploySpec,
-    DiscoveredPeer, ManagedApp, Node, TelemetrySample, TokenScope,
+    DiscoveredPeer, ManagedApp, Node, Secret, TelemetrySample, TokenScope,
 };
 
 #[async_trait]
@@ -31,6 +31,9 @@ pub trait FleetRepository: Send + Sync {
     async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()>;
     /// Forget a machine and its agent key, so its agent can't check in again.
     async fn delete_node(&self, node_id: &str) -> CoreResult<()>;
+    async fn list_secrets(&self) -> CoreResult<Vec<Secret>>;
+    async fn upsert_secret(&self, secret: Secret) -> CoreResult<()>;
+    async fn delete_secret(&self, name: &str) -> CoreResult<bool>;
 }
 
 #[async_trait]

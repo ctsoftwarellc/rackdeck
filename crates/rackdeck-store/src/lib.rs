@@ -5,7 +5,7 @@ use std::thread;
 use async_trait::async_trait;
 use rackdeck_core::{
     now_unix_secs, AccessTokenRecord, Account, AccountKey, AuditEvent, AuditRepository, ConnectRoute, ConnectTenant,
-    CoreError, CoreResult, FleetRepository, Node, RouteRepository, TenantRepository,
+    CoreError, CoreResult, FleetRepository, Node, RouteRepository, Secret, TenantRepository,
     TokenRepository, TokenScope, UsageRepository,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -24,6 +24,9 @@ enum DbCmd {
     GetAgentKey(String, oneshot::Sender<CoreResult<Option<String>>>),
     SetAgentKey(String, String, oneshot::Sender<CoreResult<()>>),
     DeleteNode(String, oneshot::Sender<CoreResult<()>>),
+    ListSecrets(oneshot::Sender<CoreResult<Vec<Secret>>>),
+    UpsertSecret(Secret, oneshot::Sender<CoreResult<()>>),
+    DeleteSecret(String, oneshot::Sender<CoreResult<bool>>),
     ListRoutes(oneshot::Sender<CoreResult<Vec<ConnectRoute>>>),
     UpsertRoute(ConnectRoute, oneshot::Sender<CoreResult<()>>),
     DeleteRoute(String, oneshot::Sender<CoreResult<bool>>),
@@ -111,6 +114,11 @@ fn init_schema(conn: &Connection) -> CoreResult<()> {
         CREATE TABLE IF NOT EXISTS agent_keys (
             node_id TEXT PRIMARY KEY,
             key_hash TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS secrets (
+            name TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS routes (
@@ -277,6 +285,44 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
                 .map_err(|e| CoreError::Storage(e.to_string()))?;
                 Ok(node)
             })();
+            let _ = reply.send(res);
+        }
+        DbCmd::ListSecrets(reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM secrets ORDER BY name ASC")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let mut out = Vec::new();
+                for item in rows {
+                    let s = item.map_err(|e| CoreError::Storage(e.to_string()))?;
+                    out.push(serde_json::from_str(&s).map_err(|e| CoreError::Storage(e.to_string()))?);
+                }
+                Ok(out)
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::UpsertSecret(secret, reply) => {
+            let res = serde_json::to_string(&secret)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO secrets (name, payload_json) VALUES (?1, ?2)
+                         ON CONFLICT(name) DO UPDATE SET payload_json = excluded.payload_json",
+                        params![secret.name, json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::DeleteSecret(name, reply) => {
+            let res = conn
+                .execute("DELETE FROM secrets WHERE name = ?1", params![name])
+                .map(|n| n > 0)
+                .map_err(|e| CoreError::Storage(e.to_string()));
             let _ = reply.send(res);
         }
         DbCmd::ListRoutes(reply) => {
@@ -630,6 +676,15 @@ impl FleetRepository for SqliteStore {
     }
     async fn delete_node(&self, node_id: &str) -> CoreResult<()> {
         self.call(|r| DbCmd::DeleteNode(node_id.to_string(), r)).await
+    }
+    async fn list_secrets(&self) -> CoreResult<Vec<Secret>> {
+        self.call(DbCmd::ListSecrets).await
+    }
+    async fn upsert_secret(&self, secret: Secret) -> CoreResult<()> {
+        self.call(|r| DbCmd::UpsertSecret(secret, r)).await
+    }
+    async fn delete_secret(&self, name: &str) -> CoreResult<bool> {
+        self.call(|r| DbCmd::DeleteSecret(name.to_string(), r)).await
     }
     async fn set_connect_state(
         &self,

@@ -12,12 +12,14 @@ REPO="${RACKDECK_REPO:-ctsoftwarellc/rackdeck}"
 VERSION="${RACKDECK_VERSION:-latest}"
 CONTROLLER=""
 JOIN_TOKEN=""
+CONTROLLER_KEY=""
 SERVICE=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --controller) CONTROLLER="$2"; shift 2 ;;
     --join|--token) JOIN_TOKEN="$2"; shift 2 ;;
+    --key) CONTROLLER_KEY="$2"; shift 2 ;;
     --service) SERVICE=1; shift ;;
     *) shift ;;
   esac
@@ -80,6 +82,20 @@ if [ "$OS" = "darwin" ] && [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
     $SUDO mkdir -p /usr/local/bin && $SUDO ln -sf "$BIN" /usr/local/bin/rackdeck
   fi
 fi
+
+# Secrets from the dashboard land in the installing user's ~/.config/rackdeck/secrets.env.
+# Have their shells load it, once.
+TARGET_USER="${SUDO_USER:-$(id -un)}"
+USER_HOME="$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)"
+[ -n "$USER_HOME" ] || USER_HOME="$HOME"
+SECRETS_FILE="${USER_HOME}/.config/rackdeck/secrets.env"
+HOOK='[ -f "$HOME/.config/rackdeck/secrets.env" ] && . "$HOME/.config/rackdeck/secrets.env"'
+[ "$OS" = "darwin" ] && [ ! -f "$USER_HOME/.zshrc" ] && touch "$USER_HOME/.zshrc"
+for rc in "$USER_HOME/.bashrc" "$USER_HOME/.zshrc"; do
+  if [ -f "$rc" ] && ! grep -q 'rackdeck/secrets.env' "$rc" 2>/dev/null; then
+    printf '\n# Rackdeck secrets\n%s\n' "$HOOK" >> "$rc" 2>/dev/null || true
+  fi
+done
 
 HAS_SYSTEMD=""
 if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -175,7 +191,16 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
   echo "Joining controller at ${CONTROLLER}..."
   # The working address goes first; the agent falls back to the others if it stops answering.
   CONTROLLERS="${CONTROLLER},${TRIED}"
-  if ! install_service rackdeck-agent "Rackdeck agent" "RACKDECK_AGENT_STATE=${STATE}" \
+  AGENT_ENV="RACKDECK_AGENT_STATE=${STATE}"
+  [ -n "$CONTROLLER_KEY" ] && AGENT_ENV="${AGENT_ENV}
+RACKDECK_CONTROLLER_KEY=${CONTROLLER_KEY}"
+  if [ "$OS" = "linux" ]; then
+    # The service runs as root; write secrets into the user's home, owned by them.
+    AGENT_ENV="${AGENT_ENV}
+RACKDECK_SECRETS_FILE=${SECRETS_FILE}
+RACKDECK_SECRETS_OWNER=$(id -u "$TARGET_USER"):$(id -g "$TARGET_USER")"
+  fi
+  if ! install_service rackdeck-agent "Rackdeck agent" "$AGENT_ENV" \
       agent --controller "$CONTROLLERS" --token "$JOIN_TOKEN"; then
     if grep -qi microsoft /proc/version 2>/dev/null; then
       echo "This is WSL without systemd, so the agent stops when this window closes. To keep it running:" >&2
@@ -183,7 +208,7 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
       echo "  2. Run  wsl --shutdown  in Windows PowerShell, reopen Ubuntu, and run this command again." >&2
     fi
     echo "No systemd found, running in the foreground. It stops when this shell closes."
-    exec "$BIN" agent --controller "$CONTROLLERS" --token "$JOIN_TOKEN"
+    RACKDECK_CONTROLLER_KEY="$CONTROLLER_KEY" exec "$BIN" agent --controller "$CONTROLLERS" --token "$JOIN_TOKEN"
   fi
 elif [ -n "$SERVICE" ]; then
   if [ -z "${RACKDECK_PASSWORD:-}" ]; then

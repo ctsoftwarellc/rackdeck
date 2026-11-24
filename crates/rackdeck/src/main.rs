@@ -3,11 +3,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use rackdeck_api::{build_router, ApiState, AssetProvider};
+use rackdeck_api::{build_router, AgentBus, ApiState, AssetProvider};
 use rackdeck_core::{FleetRepository, FleetService, NodeOps};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
-use rackdeck_protocol::ServerWsEvent;
+use rackdeck_protocol::{AgentCommand, AgentCommandResult, AgentOp, AgentOutput, ServerWsEvent};
 use rackdeck_store::SqliteStore;
 use rust_embed::Embed;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -78,10 +78,13 @@ pub async fn build_all_in_one_state(
     let signing_key = Arc::new(load_or_create_signing_key(db_path));
     let (ws_tx, _) = broadcast::channel::<ServerWsEvent>(256);
 
+    let agent_bus = Arc::new(AgentBus::default());
     let fleet_svc = Arc::new(FleetService {
         fleet: store.clone(),
         audit: store.clone(),
         local_node: local_node.clone(),
+        local_node_id: initial_node.id.clone(),
+        remote: agent_bus.clone(),
     });
 
     let state = ApiState {
@@ -101,6 +104,7 @@ pub async fn build_all_in_one_state(
         remote_apps: Arc::new(RwLock::new(HashMap::new())),
         join_tokens: Arc::new(RwLock::new(HashMap::new())),
         agent_keys: Arc::new(RwLock::new(HashMap::new())),
+        agent_bus,
         owner_password: std::env::var("RACKDECK_PASSWORD").ok().filter(|s| !s.is_empty()),
         owner_sessions: Arc::new(RwLock::new(HashMap::new())),
         ws_tx,
@@ -150,7 +154,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
-    let local = LocalNodeAdapter::new(7420);
+    let local = Arc::new(LocalNodeAdapter::new(7420));
     let host_port = controller
         .trim_start_matches("http://")
         .trim_start_matches("https://")
@@ -163,10 +167,20 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
     let mut enrolled = false;
     let mut last_err: Option<String> = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    // Finished command results wait here until a check-in delivers them.
+    let mut results: Vec<AgentCommandResult> = Vec::new();
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<AgentCommandResult>();
     tracing::info!("rackdeck agent connecting to {controller} as {}", local.callsign());
 
     loop {
-        interval.tick().await;
+        // Check in every 2s, or right away when a command finishes so the UI isn't kept waiting.
+        tokio::select! {
+            _ = interval.tick() => {}
+            Some(r) = done_rx.recv() => results.push(r),
+        }
+        while let Ok(r) = done_rx.try_recv() {
+            results.push(r);
+        }
         let node = match local.inspect_node().await {
             Ok(n) => n,
             Err(e) => {
@@ -176,7 +190,7 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         };
         let sample = local.sample().await.ok();
         let apps = local.list_apps().await.unwrap_or_default();
-        let payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps }).to_string();
+        let payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results }).to_string();
 
         let connect_res = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -264,7 +278,22 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
             last_err = None;
         }
 
+        results.clear(); // delivered
+
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+            let commands: Vec<AgentCommand> = val
+                .get("commands")
+                .and_then(|c| serde_json::from_value(c.clone()).ok())
+                .unwrap_or_default();
+            for cmd in commands {
+                let local = local.clone();
+                let done_tx = done_tx.clone();
+                tokio::spawn(async move {
+                    tracing::info!("running {:?} from controller", cmd.op);
+                    let result = run_agent_command(local.as_ref(), cmd.op).await;
+                    let _ = done_tx.send(AgentCommandResult { id: cmd.id, result });
+                });
+            }
             if let Some(k) = val.get("agentKey").and_then(|v| v.as_str()) {
                 bearer = k.to_string();
                 enrolled = true;
@@ -275,6 +304,15 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
             }
         }
     }
+}
+
+async fn run_agent_command(local: &LocalNodeAdapter, op: AgentOp) -> Result<AgentOutput, String> {
+    match op {
+        AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|_| AgentOutput::Done),
+        AgentOp::Deploy { spec } => local.deploy_app(spec).await.map(|app| AgentOutput::App { app }),
+        AgentOp::Logs { app_id, lines } => local.tail_logs(&app_id, lines).await.map(|lines| AgentOutput::Lines { lines }),
+    }
+    .map_err(|e| e.to_string())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -485,5 +523,32 @@ mod tests {
         )
         .await;
         assert!(deploy_denied.contains("403 Forbidden"), "expected 403: {deploy_denied}");
+
+        // 9. UI asks for logs on the remote node: controller queues the command, the agent
+        //    picks it up on check-in and posts the result on the next one.
+        let checkin_body: serde_json::Value =
+            serde_json::from_str(checkin_res.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let agent_key = checkin_body["agentKey"].as_str().unwrap().to_string();
+        let logs_req = tokio::spawn(async move {
+            http_get(server_addr, "/api/v1/nodes/node-home-5090/apps/docker:abc/logs").await
+        });
+        let mut cmd = serde_json::Value::Null;
+        for _ in 0..50 {
+            let res = http_post_json(server_addr, "/api/v1/agent/checkin", checkin_payload, Some(&agent_key)).await;
+            let body: serde_json::Value = serde_json::from_str(res.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            if let Some(c) = body["commands"].as_array().and_then(|c| c.first()) {
+                cmd = c.clone();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(cmd["op"]["kind"], "logs", "agent never received the logs command: {cmd}");
+        assert_eq!(cmd["op"]["appId"], "docker:abc");
+
+        let mut reply: serde_json::Value = serde_json::from_str(checkin_payload).unwrap();
+        reply["results"] = serde_json::json!([{ "id": cmd["id"], "result": { "Ok": { "kind": "lines", "lines": ["hello from 5090"] } } }]);
+        http_post_json(server_addr, "/api/v1/agent/checkin", &reply.to_string(), Some(&agent_key)).await;
+        let logs_res = logs_req.await.unwrap();
+        assert!(logs_res.contains("hello from 5090"), "remote logs not relayed: {logs_res}");
     }
 }

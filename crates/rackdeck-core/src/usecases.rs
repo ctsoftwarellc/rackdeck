@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     AppAction, AuditEvent, AuditRepository, Capability, CoreResult, DeploySpec, FleetRepository,
-    ManagedApp, Node, NodeOps, Principal,
+    ManagedApp, Node, NodeOps, Principal, RemoteDispatch,
 };
 
 pub fn now_unix_secs() -> u64 {
@@ -17,6 +17,9 @@ pub struct FleetService {
     pub fleet: Arc<dyn FleetRepository>,
     pub audit: Arc<dyn AuditRepository>,
     pub local_node: Arc<dyn NodeOps>,
+    /// Id of the machine this controller runs on; every other node id is routed to `remote`.
+    pub local_node_id: String,
+    pub remote: Arc<dyn RemoteDispatch>,
 }
 
 impl FleetService {
@@ -59,7 +62,11 @@ impl FleetService {
             return Err(err);
         }
 
-        let res = self.local_node.app_action(app_id, action).await;
+        let res = if node_id == self.local_node_id {
+            self.local_node.app_action(app_id, action).await
+        } else {
+            self.remote.app_action(node_id, app_id, action).await
+        };
         let _ = self
             .audit
             .append_audit(AuditEvent {
@@ -98,7 +105,11 @@ impl FleetService {
             return Err(err);
         }
 
-        let res = self.local_node.deploy_app(spec).await;
+        let res = if node_id == self.local_node_id {
+            self.local_node.deploy_app(spec).await
+        } else {
+            self.remote.deploy_app(node_id, spec).await
+        };
         let _ = self
             .audit
             .append_audit(AuditEvent {
@@ -122,6 +133,11 @@ impl FleetService {
         lines: usize,
     ) -> CoreResult<Vec<String>> {
         principal.authorize(Capability::ReadLogs, Some(node_id))?;
-        self.local_node.tail_logs(app_id, lines.min(500)).await
+        let lines = lines.min(500);
+        if node_id == self.local_node_id {
+            self.local_node.tail_logs(app_id, lines).await
+        } else {
+            self.remote.tail_logs(node_id, app_id, lines).await
+        }
     }
 }

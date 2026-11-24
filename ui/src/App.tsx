@@ -189,6 +189,35 @@ function QrSvg({ uri }: { uri: string }) {
   return <div className="qr-box" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
+/** Mirrors the tools/list response in rackdeck-api's /mcp handler. */
+const MCP_TOOLS = [
+  { name: "node_health", does: "List your machines with live CPU, memory, GPU, and status.", scope: "read" },
+  { name: "container_logs_tail", does: "Read the recent logs of an app or container.", scope: "read" },
+  { name: "app_action", does: "Start, stop, or restart a container.", scope: "deploy" },
+  { name: "deploy_app", does: "Run a new Docker container with ports and env vars.", scope: "deploy" },
+];
+
+const DEPLOY_PRESETS = [
+  { label: "Open WebUI", name: "open-webui", image: "ghcr.io/open-webui/open-webui:main", hp: "3000", cp: "8080", env: "", about: "ChatGPT-style web UI for your local models. Opens on port 3000." },
+  { label: "Uptime Kuma", name: "uptime-kuma", image: "louislam/uptime-kuma:1", hp: "3001", cp: "3001", env: "", about: "Uptime monitor with a status page. Opens on port 3001." },
+  { label: "Nginx", name: "nginx", image: "nginx:alpine", hp: "8088", cp: "80", env: "", about: "Plain web server. Handy for testing a port. Opens on port 8088." },
+  { label: "Redis", name: "redis", image: "redis:7-alpine", hp: "6379", cp: "6379", env: "", about: "In-memory key/value store on port 6379." },
+  { label: "Postgres", name: "postgres", image: "postgres:17", hp: "5432", cp: "5432", env: "POSTGRES_PASSWORD=changeme", about: "Postgres database on port 5432. Change the password before exposing it." },
+  { label: "Custom image", name: "", image: "", hp: "", cp: "", env: "", about: "" },
+];
+
+/** Mirrors the args rackdeck-node builds for `docker run`, so the preview matches what actually runs. */
+function dockerRunPreview(name: string, image: string, hostPort: string, contPort: string, envText: string): string {
+  const parts = ["docker run -d", `--name ${name.trim() || "<app-name>"}`, "--restart unless-stopped"];
+  if (hostPort.trim() && contPort.trim()) parts.push(`-p ${hostPort.trim()}:${contPort.trim()}`);
+  for (const line of envText.split("\n")) {
+    const idx = line.indexOf("=");
+    if (idx > 0) parts.push(`-e ${line.slice(0, idx).trim()}=${line.slice(idx + 1).trim()}`);
+  }
+  parts.push(image.trim());
+  return parts.join(" \\\n  ");
+}
+
 export function App() {
   const route = useHash();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -260,7 +289,6 @@ export function App() {
   const [routeTarget, setRouteTarget] = useState("");
   const [confirmDeleteRoute, setConfirmDeleteRoute] = useState<string | null>(null);
   const [connectSlugInput, setConnectSlugInput] = useState("");
-  const [checkoutMsg, setCheckoutMsg] = useState<string | null>(null);
 
   // Access & Audit
   const [tokens, setTokens] = useState<AccessTokenRecord[]>([]);
@@ -472,7 +500,6 @@ export function App() {
   }
 
   async function toggleConnect(node: Node) {
-    setCheckoutMsg(null);
     const slug = (connectSlugInput.trim() || node.connectSlug || node.name).toLowerCase();
     const res = await fetch("/api/v1/connect", {
       method: "POST",
@@ -486,21 +513,7 @@ export function App() {
     }
   }
 
-  async function startConnectCheckout(node: Node) {
-    setCheckoutMsg(null);
-    const slug = (connectSlugInput.trim() || node.connectSlug || node.name).toLowerCase();
-    const res = await fetch("/api/v1/connect/checkout", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ slug }),
-    });
-    const data = await res.json().catch(() => ({ error: "Checkout failed" }));
-    if (res.ok && data.url) {
-      window.open(data.url, "_blank", "noopener,noreferrer");
-    } else {
-      setCheckoutMsg(data.error ?? "Could not start Stripe checkout");
-    }
-  }
+
 
   async function saveNewRoute(e: React.FormEvent) {
     e.preventDefault();
@@ -1304,30 +1317,65 @@ export function App() {
               <div>
                 <h1 className="page-title">Network &amp; Connect</h1>
                 <p className="page-sub">
-                  Discover Tailscale peers on your network or expose services through Rackdeck Connect.
+                  How your machines reach each other, and how you reach them when you're away from home.
                 </p>
               </div>
-              {primaryNode && (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <input
-                    className="input"
-                    style={{ width: 150, fontFamily: "var(--mono)" }}
-                    placeholder={primaryNode.connectSlug ?? "my-fleet"}
-                    value={connectSlugInput}
-                    onChange={(e) => setConnectSlugInput(e.target.value)}
-                  />
-                  <button type="button" className="btn btn-primary" onClick={() => startConnectCheckout(primaryNode)}>
-                    Subscribe ($9/mo)
-                  </button>
-                  <button type="button" className="btn" onClick={() => toggleConnect(primaryNode)}>
-                    {primaryNode.connectEnabled ? "Disconnect tunnel" : "Connect tunnel"}
-                  </button>
-                </div>
-              )}
             </div>
-            {checkoutMsg && <div className="inline-err" style={{ margin: "0 0 16px" }}>{checkoutMsg}</div>}
 
             <div className="stack-sections">
+              <section className="card card-pad">
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 }}>
+                  <div>
+                    <h2 className="card-title" style={{ marginBottom: 6 }}>
+                      Tailscale
+                      <span className={`pill ${primaryNode?.tailscaleIp ? "ok" : "neutral"}`}>
+                        {primaryNode?.tailscaleIp ? `Detected · ${primaryNode.tailscaleIp}` : "Not detected"}
+                      </span>
+                    </h2>
+                    <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
+                      {primaryNode?.tailscaleIp
+                        ? "Rackdeck found Tailscale by running the tailscale command on this machine (read-only: tailscale ip and tailscale status). It never logs into your Tailscale account and has no API key. "
+                        : "If you install Tailscale on your machines, Rackdeck will spot it automatically and list your other devices below. "}
+                      <strong style={{ color: "var(--text-1)" }}>Already on Tailscale? You don't need Connect.</strong> Open
+                      Rackdeck from any device on your tailnet at its Tailscale IP.
+                    </p>
+                  </div>
+                  <div>
+                    <h2 className="card-title" style={{ marginBottom: 6 }}>
+                      Rackdeck Connect
+                      <span className="pill neutral">Hosted version coming soon</span>
+                    </h2>
+                    <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
+                      For when you don't want Tailscale everywhere. Your machine opens an outbound, encrypted connection to a
+                      relay server, and the relay forwards a public address like <span className="mono">you.rackdev.app</span> back
+                      to your dashboard. No router ports, no VPN app on your phone. The hosted relay ($9/mo) isn't live yet.
+                    </p>
+                    <details style={{ marginTop: 10, fontSize: 13, color: "var(--text-2)" }}>
+                      <summary style={{ cursor: "pointer", color: "var(--text-1)" }}>Run your own relay instead</summary>
+                      <p style={{ lineHeight: 1.55 }}>
+                        Run <span className="mono">rackdeck-relay</span> on a server with a public IP, then start this controller
+                        with <span className="mono">RACKDECK_RELAY_URL=wss://your-relay/_rackdeck/tunnel</span>. Without that,
+                        the tunnel tries a relay on this machine (<span className="mono">127.0.0.1:7430</span>) and won't connect.
+                      </p>
+                      {primaryNode && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <input
+                            className="input"
+                            style={{ width: 150, fontFamily: "var(--mono)" }}
+                            placeholder={primaryNode.connectSlug ?? "my-fleet"}
+                            value={connectSlugInput}
+                            onChange={(e) => setConnectSlugInput(e.target.value)}
+                          />
+                          <button type="button" className="btn" onClick={() => toggleConnect(primaryNode)}>
+                            {primaryNode.connectEnabled ? "Disconnect tunnel" : "Connect tunnel"}
+                          </button>
+                        </div>
+                      )}
+                    </details>
+                  </div>
+                </div>
+              </section>
+
               {/* 1. Tailnet Discovery */}
               <section className="card">
                 <div className="card-head">
@@ -1381,7 +1429,7 @@ export function App() {
                           <td colSpan={4} style={{ color: "var(--text-2)" }}>
                             {scanning
                               ? "Probing Tailscale peers on port 7420…"
-                              : "No Tailscale peers detected. Sign into Tailscale on this machine or pair another box directly."}
+                              : "No other Tailscale devices found. Sign into Tailscale on this machine, or add a machine with a join command instead."}
                           </td>
                         </tr>
                       )}
@@ -1552,6 +1600,48 @@ export function App() {
             </div>
 
             <div className="stack-sections">
+              <section className="card card-pad">
+                <h2 className="card-title" style={{ marginBottom: 6 }}>Let an AI coding tool manage your machines</h2>
+                <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
+                  Rackdeck has a built-in MCP server. Claude Code, Codex, or Cursor can connect to it with a token and use a
+                  small set of tools. You pick what each token can do, every call shows up in the Audit log, and you can revoke a
+                  token any time. No SSH keys, and no shell access, ever.
+                </p>
+                <div className="field" style={{ marginBottom: 14 }}>
+                  <label>MCP endpoint</label>
+                  <div><Copy value={`${location.origin}/mcp`} /></div>
+                </div>
+                <div className="tbl-wrap" style={{ marginBottom: 14 }}>
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Tool</th>
+                        <th>What it does</th>
+                        <th>Token scope</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {MCP_TOOLS.map((t) => (
+                        <tr key={t.name}>
+                          <td className="mono">{t.name}</td>
+                          <td style={{ color: "var(--text-2)" }}>{t.does}</td>
+                          <td>
+                            <span className={`pill ${t.scope === "deploy" ? "warn" : "neutral"}`}>
+                              {t.scope === "deploy" ? "deploy only" : "read + deploy"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--text-2)", lineHeight: 1.7 }}>
+                  <li>Click <strong style={{ color: "var(--text-1)" }}>+ Create token</strong>. Choose <em>read</em> to let the tool look, or <em>deploy</em> to let it start, stop, and deploy containers too.</li>
+                  <li>Copy the setup command it shows you (Claude Code and Codex) or the JSON config (Cursor). The token is only shown once.</li>
+                  <li>Ask your tool something like "check my Rackdeck machines" or "restart uptime-kuma on CALEB-PC".</li>
+                </ol>
+              </section>
+
               <section className="card">
                 <div className="card-head">
                   <h2 className="card-title">MCP tokens</h2>
@@ -1740,21 +1830,30 @@ export function App() {
               <button type="button" className="btn btn-sm" onClick={() => setDeployOpen(false)}>✕</button>
             </div>
             <div className="side-drawer-body">
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>
+                Runs a Docker container on <strong style={{ color: "var(--text-1)" }}>{detailNode.name}</strong>. Pick a
+                starter app or paste any image from Docker Hub or GHCR. It restarts automatically if the machine reboots.
+              </p>
+
+              {detailNode.docker !== "running" && (
+                <div className="inline-err" style={{ margin: 0 }}>
+                  {detailNode.docker === "absent"
+                    ? `Docker isn't installed on ${detailNode.name}. Install Docker (or Docker Desktop) there first, then come back.`
+                    : `Docker is installed on ${detailNode.name} but not running. Start Docker there first.`}
+                </div>
+              )}
+
               <div>
                 <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>
-                  Quick presets
+                  Starter apps
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {[
-                    { name: "postgres", image: "postgres:17", hp: "5432", cp: "5432", env: "POSTGRES_PASSWORD=changeme" },
-                    { name: "redis", image: "redis:7-alpine", hp: "6379", cp: "6379", env: "" },
-                    { name: "nginx", image: "nginx:alpine", hp: "8088", cp: "80", env: "" },
-                    { name: "ollama", image: "ollama/ollama", hp: "11434", cp: "11434", env: "" },
-                  ].map((p) => (
+                  {DEPLOY_PRESETS.map((p) => (
                     <button
-                      key={p.name}
+                      key={p.label}
                       type="button"
                       className="btn btn-sm"
+                      title={p.about}
                       onClick={() => {
                         setDepName(p.name);
                         setDepImage(p.image);
@@ -1763,10 +1862,15 @@ export function App() {
                         setDepEnvText(p.env);
                       }}
                     >
-                      {p.name}
+                      {p.label}
                     </button>
                   ))}
                 </div>
+                {DEPLOY_PRESETS.find((p) => p.image && p.image === depImage) && (
+                  <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 6 }}>
+                    {DEPLOY_PRESETS.find((p) => p.image === depImage)?.about}
+                  </div>
+                )}
               </div>
 
               <form onSubmit={submitDeploy} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1798,9 +1902,24 @@ export function App() {
                     onChange={(e) => setDepEnvText(e.target.value)}
                   />
                 </div>
+                {depImage.trim() && (
+                  <div className="field">
+                    <label>What Rackdeck will run on {detailNode.name}</label>
+                    <pre
+                      className="input"
+                      style={{ width: "100%", margin: 0, padding: 8, height: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "var(--mono)", fontSize: 12 }}
+                    >
+                      {dockerRunPreview(depName, depImage, depHostPort, depContPort, depEnvText)}
+                    </pre>
+                  </div>
+                )}
                 {depErr && <div style={{ color: "var(--crit)", fontSize: 13 }}>{depErr}</div>}
-                <button type="submit" className="btn btn-primary" disabled={depBusy}>
-                  {depBusy ? "Deploying…" : "Deploy container"}
+                <button type="submit" className="btn btn-primary" disabled={depBusy || detailNode.docker !== "running"}>
+                  {depBusy
+                    ? detailNode.id === primaryNode?.id
+                      ? "Deploying…"
+                      : `Sending to ${detailNode.name}… (pulling the image can take a minute)`
+                    : "Deploy container"}
                 </button>
               </form>
             </div>

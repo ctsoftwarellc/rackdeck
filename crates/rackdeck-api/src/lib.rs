@@ -16,12 +16,15 @@ use rackdeck_core::{
     RouteRepository, TelemetrySample, TlsState, TokenRepository, TokenScope,
 };
 use rackdeck_discovery::create_pairing_invitation;
-use rackdeck_protocol::{ClientWsCommand, ServerWsEvent};
+use rackdeck_protocol::{AgentCommandResult, ClientWsCommand, ServerWsEvent};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
+
+mod agent_bus;
+pub use agent_bus::AgentBus;
 
 pub trait AssetProvider: Send + Sync {
     fn get_asset(&self, path: &str) -> Option<(Vec<u8>, String)>;
@@ -45,6 +48,7 @@ pub struct ApiState {
     pub remote_apps: Arc<RwLock<HashMap<String, Vec<ManagedApp>>>>,
     pub join_tokens: Arc<RwLock<HashMap<String, u64>>>,
     pub agent_keys: Arc<RwLock<HashMap<String, String>>>,
+    pub agent_bus: Arc<AgentBus>,
     pub owner_password: Option<String>,
     pub owner_sessions: Arc<RwLock<HashMap<String, u64>>>,
     pub ws_tx: broadcast::Sender<ServerWsEvent>,
@@ -408,6 +412,8 @@ struct AgentCheckinBody {
     node: Node,
     sample: Option<TelemetrySample>,
     apps: Vec<ManagedApp>,
+    #[serde(default)]
+    results: Vec<AgentCommandResult>,
 }
 
 async fn agent_checkin(
@@ -500,9 +506,12 @@ async fn agent_checkin(
         apps: all_apps,
     });
 
+    let commands = state.agent_bus.checkin(&body.node.id, body.results).await;
+
     Json(serde_json::json!({
         "ok": true,
-        "agentKey": issued_agent_key
+        "agentKey": issued_agent_key,
+        "commands": commands
     }))
     .into_response()
 }
@@ -868,6 +877,45 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_ui_ws(socket, state))
 }
 
+/// Live logs for an app on a remote agent: poll its tail every 3s and forward only new lines.
+async fn follow_remote_logs(
+    fleet: Arc<FleetService>,
+    principal: Principal,
+    node_id: String,
+    app_id: String,
+    sub: String,
+    tx: tokio::sync::mpsc::Sender<String>,
+) {
+    let mut last: Option<String> = None;
+    loop {
+        let lines = match fleet.tail_logs(&principal, &node_id, &app_id, 200).await {
+            Ok(lines) => lines,
+            Err(e) => vec![format!("[rackdeck] couldn't read logs from {node_id}: {e}")],
+        };
+        // ponytail: resumes after the last line we sent; if that exact line repeats in the window
+        // a few lines may be skipped. Switch to `docker logs --since` cursors if that bites.
+        let start = last
+            .as_ref()
+            .and_then(|l| lines.iter().rposition(|x| x == l).map(|i| i + 1))
+            .unwrap_or(if last.is_some() { 0 } else { lines.len().saturating_sub(80) });
+        let fresh = &lines[start.min(lines.len())..];
+        if !fresh.is_empty() {
+            last = fresh.last().cloned();
+            let now = now_unix_secs();
+            let ev = ServerWsEvent::Log {
+                sub: sub.clone(),
+                lines: fresh.iter().map(|l| (now, "stdout".to_string(), l.clone())).collect(),
+            };
+            if let Ok(out) = serde_json::to_string(&ev) {
+                if tx.send(out).await.is_err() {
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
 async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
@@ -928,7 +976,7 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
                     ClientWsCommand::Sub {
                         ch,
                         sub,
-                        node_id: _,
+                        node_id,
                         app_id,
                     } if ch == "logs" => {
                         if let Some(prev) = log_tasks.remove(&sub) {
@@ -937,6 +985,16 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
                         let target = app_id.unwrap_or_else(|| "system:rackdeck".into());
                         let tx = reply_tx.clone();
                         let sub_key = sub.clone();
+                        if node_id != state.local_node_id {
+                            let fleet = state.fleet_svc.clone();
+                            // WS upgrades are owner-session only (see ws_handler).
+                            let principal = Principal::Owner { label: "you (web)".into() };
+                            let handle = tokio::spawn(async move {
+                                follow_remote_logs(fleet, principal, node_id, target, sub_key, tx).await
+                            });
+                            log_tasks.insert(sub, handle);
+                            continue;
+                        }
                         let local_node = state.local_node.clone();
                         let handle = tokio::spawn(async move {
                             if let Some(cid) = target.strip_prefix("docker:") {

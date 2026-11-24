@@ -28,11 +28,13 @@ impl LocalNodeAdapter {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();
-        let callsign: String = host
+        // Display name only; node_id (from `slug`) stays tied to the raw hostname so existing fleets keep their ids.
+        let callsign: String = display_host_name(&host)
             .to_uppercase()
+            .replace(' ', "-")
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .take(16)
+            .take(24)
             .collect();
 
         let mut sys = System::new_all();
@@ -61,6 +63,24 @@ impl LocalNodeAdapter {
     pub fn callsign(&self) -> &str {
         &self.callsign
     }
+}
+
+/// Friendly machine name: the macOS Computer Name ("Caleb's MacBook Pro") when available,
+/// otherwise the hostname without DHCP/mDNS suffixes like `.attlocal.net` or `.local`.
+fn display_host_name(host: &str) -> String {
+    if cfg!(target_os = "macos") {
+        if let Ok(out) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    strip_domain(host)
+}
+
+fn strip_domain(host: &str) -> String {
+    host.split('.').next().unwrap_or(host).to_string()
 }
 
 async fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
@@ -506,5 +526,14 @@ impl NodeOps for LocalNodeAdapter {
             format!("[rackdeck] listening on :{}", self.port),
             format!("[rackdeck] telemetry sampler active @ 1Hz"),
         ])
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    #[test]
+    fn strips_dhcp_suffixes() {
+        assert_eq!(super::strip_domain("mac.attlocal.net"), "mac");
+        assert_eq!(super::strip_domain("CALEB-PC"), "CALEB-PC");
     }
 }

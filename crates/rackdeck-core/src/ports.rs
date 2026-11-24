@@ -76,3 +76,11 @@ pub trait DiscoveryPort: Send + Sync {
     async fn scan_peers(&self, rackdeck_port: u16, known_ips: &[String])
         -> CoreResult<Vec<DiscoveredPeer>>;
 }
+
+/// Runs app operations on an enrolled remote agent instead of the controller's own machine.
+#[async_trait]
+pub trait RemoteDispatch: Send + Sync {
+    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<()>;
+    async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp>;
+    async fn tail_logs(&self, node_id: &str, app_id: &str, lines: usize) -> CoreResult<Vec<String>>;
+}

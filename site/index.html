@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Rackdeck — All your machines in one clean, secure dashboard</title>
-<meta name="description" content="Manage your home PC, GPU rig, Mac, and cloud VPS from one fast 4.7 MB open-source dashboard. Free forever on your home network or Tailscale." />
+<title>Rackdeck: All your machines in one dashboard</title>
+<meta name="description" content="Manage your Mac, Linux GPU rig, home server, and cloud VPS from one ~6 MB open-source dashboard. Free forever to self-host on your network or Tailscale." />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Rackdeck" />
 <meta property="og:url" content="https://rackdeck.dev/" />
-<meta property="og:title" content="Rackdeck — All your machines in one clean, secure dashboard" />
-<meta property="og:description" content="Check temps and GPU memory, manage Docker apps, stream live logs, and reach your machines safely from anywhere — without opening router ports." />
+<meta property="og:title" content="Rackdeck: All your machines in one dashboard" />
+<meta property="og:description" content="Monitor hardware and NVIDIA GPU stats, manage Docker apps, push encrypted secrets, and stream live logs without opening router ports." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -22,7 +22,7 @@
     --bg-hover: rgba(255, 255, 255, 0.04);
     --fg: #f3f5f8;
     --fg-muted: #9aa4b2;
-    --fg-dim: #6c7686;
+    --fg-dim: #8590a2;
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.15);
     --accent: #2563eb;
@@ -49,7 +49,7 @@
     --bg-hover: rgba(15, 23, 42, 0.035);
     --fg: #0f172a;
     --fg-muted: #475569;
-    --fg-dim: #64748b;
+    --fg-dim: #58667a;
     --border: rgba(15, 23, 42, 0.09);
     --border-strong: rgba(15, 23, 42, 0.16);
     --accent: #2563eb;
@@ -144,13 +144,16 @@
     font-weight: 650;
     letter-spacing: -0.02em;
   }
-  .brand-tag {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--fg-dim);
-    border: 1px solid var(--border);
-    padding: 1px 6px;
-    border-radius: 999px;
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .nav-links {
     display: flex;
@@ -185,6 +188,20 @@
     transition: border-color 0.15s, background 0.15s;
   }
   .nav-gh:hover { border-color: var(--accent-border); background: var(--bg-card-2); }
+  .nav-demo {
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+  .nav-demo:hover { background: var(--accent-hover); }
   .theme-btn {
     width: 34px;
     height: 34px;
@@ -197,6 +214,32 @@
     transition: color 0.15s, border-color 0.15s;
   }
   .theme-btn:hover { color: var(--fg); border-color: var(--border-strong); }
+  .nav-menu-btn { display: none; }
+  .mobile-nav {
+    border-top: 1px solid var(--border);
+    background: var(--bg-elev);
+    padding: 10px 24px 16px;
+  }
+  .mobile-nav[hidden] { display: none; }
+  .mobile-nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mobile-nav-link {
+    display: block;
+    padding: 10px 8px;
+    border-radius: 8px;
+    font-size: 14.5px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    transition: background 0.14s, color 0.14s;
+  }
+  .mobile-nav-link:hover,
+  .mobile-nav-link:focus-visible {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 
   /* Hero */
   .hero {
@@ -279,7 +322,7 @@
   }
   .cmd-pill:hover { border-color: var(--accent-border); background: var(--bg-card-2); }
   .cmd-pill .prompt { color: var(--accent-soft); flex-shrink: 0; user-select: none; }
-  .cmd-pill code { overflow-x: auto; white-space: nowrap; flex: 1; min-width: 0; text-align: left; }
+  .cmd-pill code { overflow-x: auto; white-space: nowrap; flex: 1; min-width: 0; text-align: left; user-select: text; }
   .cmd-copy {
     font-size: 11px;
     color: var(--fg-dim);
@@ -290,6 +333,7 @@
     flex-shrink: 0;
   }
   .cmd-copy.copied { color: var(--ok); }
+  .cmd-copy.copy-failed { color: var(--warn); }
   .hero-reassure {
     display: flex;
     flex-wrap: wrap;
@@ -721,13 +765,58 @@
   .term-line { white-space: nowrap; }
 
   /* Pricing */
+  .billing-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .billing-toggle {
+    display: inline-flex;
+    padding: 3px;
+    border-radius: 10px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    gap: 2px;
+  }
+  .billing-opt {
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    transition: background 0.15s, color 0.15s;
+  }
+  .billing-opt:hover { color: var(--fg); }
+  .billing-opt[aria-checked="true"] {
+    background: var(--bg-card);
+    color: var(--fg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+  .billing-save-hint {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--ok-tint);
+    color: var(--ok);
+    transition: opacity 0.15s ease;
+  }
+  .billing-save-hint.is-muted {
+    opacity: 0.65;
+  }
   .pricing-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 860px;
+    gap: 18px;
   }
   .price-card {
-    padding: 24px;
+    padding: 26px;
     display: flex;
     flex-direction: column;
   }
@@ -740,9 +829,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
-  .price-name { font-size: 16.5px; font-weight: 600; }
+  .price-name { font-size: 17px; font-weight: 600; }
   .price-tag {
     font-size: 11px;
     font-weight: 500;
@@ -759,17 +848,37 @@
   .price-num {
     display: flex;
     align-items: baseline;
-    gap: 5px;
-    margin-bottom: 10px;
+    gap: 6px;
+    margin-bottom: 6px;
+    min-height: 38px;
+    font-variant-numeric: tabular-nums;
   }
   .price-num strong { font-size: 36px; font-weight: 700; letter-spacing: -0.04em; line-height: 1; }
-  .price-num span { font-size: 13px; color: var(--fg-dim); }
-  .price-desc { font-size: 13.5px; color: var(--fg-muted); margin-bottom: 18px; min-height: 42px; }
+  .price-num span { font-size: 13.5px; color: var(--fg-dim); }
+  .price-meta {
+    min-height: 24px;
+    display: flex;
+    align-items: center;
+    margin-bottom: 12px;
+    font-size: 12.5px;
+    color: var(--fg-dim);
+  }
+  .price-save-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--ok-tint);
+    color: var(--ok);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .price-desc { font-size: 14px; color: var(--fg-muted); margin-bottom: 18px; min-height: 44px; }
   .price-list {
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: 10px;
     padding-top: 16px;
     margin-bottom: 22px;
     border-top: 1px solid var(--border);
@@ -779,9 +888,17 @@
   }
   .price-list li { display: flex; align-items: flex-start; gap: 8px; }
   .price-list svg { color: var(--ok); margin-top: 3px; }
+  .price-footnote {
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--fg-dim);
+    text-align: center;
+    min-height: 20px;
+  }
 
   .compare-note {
     margin-top: 18px;
+    max-width: 860px;
     padding: 18px 22px;
     display: flex;
     align-items: flex-start;
@@ -858,6 +975,7 @@
   /* Responsive */
   @media (max-width: 920px) {
     .nav-links { display: none; }
+    .nav-menu-btn { display: inline-grid; }
     .preview-grid { grid-template-columns: 1fr; }
     .preview-side {
       border-right: 0;
@@ -873,12 +991,19 @@
   }
   @media (max-width: 560px) {
     .container { padding: 0 18px; }
+    .mobile-nav { padding: 8px 18px 14px; }
     section { padding: 56px 0; }
     .hero { padding: 40px 0 54px; }
     .cmd-pill { width: 100%; font-size: 11.5px; }
     .app-row { grid-template-columns: 1.4fr 0.8fr 0.9fr; }
     .app-row > :nth-child(2) { display: none; }
     .cta-box { padding: 24px 20px; }
+    .nav-inner { gap: 8px; }
+    .nav-gh span { display: none; }
+    .nav-gh { padding: 0 8px; height: 32px; }
+    .nav-demo { padding: 0 9px; height: 32px; font-size: 12px; }
+    .theme-btn { width: 32px; height: 32px; }
+    .nav-actions { gap: 6px; }
   }
 </style>
 </head>
@@ -897,17 +1022,18 @@
           <circle cx="6.2" cy="18.4" r="1.1" fill="currentColor" opacity="0.5" />
         </svg>
         <span>Rackdeck</span>
-        <span class="brand-tag">v0.1</span>
       </a>
       <div class="nav-links">
         <a class="nav-link" href="#hardware">Hardware</a>
         <a class="nav-link" href="#features">Features</a>
         <a class="nav-link" href="#setup">Quick setup</a>
         <a class="nav-link" href="#pricing">Pricing</a>
+        <a class="nav-link" href="https://github.com/ctsoftwarellc/rackdeck/blob/main/docs/security.md" target="_blank" rel="noopener noreferrer">Security</a>
         <a class="nav-link" href="#faq">FAQ</a>
       </div>
       <div class="nav-actions">
-        <a class="nav-gh" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
+        <a class="nav-demo" href="./demo/">Live demo</a>
+        <a class="nav-gh" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer" aria-label="Rackdeck on GitHub">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.72-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.38 9.38 0 0 1 12 6.94c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.22 10.22 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
           <span>GitHub</span>
         </a>
@@ -915,6 +1041,27 @@
           <svg id="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41"/></svg>
           <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"/></svg>
         </button>
+        <button
+          class="theme-btn nav-menu-btn"
+          id="nav-menu-btn"
+          type="button"
+          aria-label="Open navigation menu"
+          aria-expanded="false"
+          aria-controls="mobile-nav"
+        >
+          <svg id="icon-menu-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+          <svg id="icon-menu-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="display:none"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="mobile-nav" id="mobile-nav" hidden>
+      <div class="mobile-nav-list">
+        <a class="mobile-nav-link" href="#hardware">Hardware</a>
+        <a class="mobile-nav-link" href="#features">Features</a>
+        <a class="mobile-nav-link" href="#setup">Quick setup</a>
+        <a class="mobile-nav-link" href="#pricing">Pricing</a>
+        <a class="mobile-nav-link" href="https://github.com/ctsoftwarellc/rackdeck/blob/main/docs/security.md" target="_blank" rel="noopener noreferrer">Security</a>
+        <a class="mobile-nav-link" href="#faq">FAQ</a>
       </div>
     </div>
   </nav>
@@ -927,37 +1074,33 @@
         <div class="hero-top">
           <div class="hero-pill">
             <span class="dot"></span>
-            <span>Open-source · Free on your home network &amp; Tailscale · 4.7 MB binary</span>
+            <span>Open source (Apache-2.0) · ~6 MB file · ~13 MB RAM</span>
           </div>
           <h1 class="hero-title">All your machines.<br />One clean, secure dashboard.</h1>
           <p class="hero-sub">
-            Keep tabs on your home PC, GPU rig, Mac, and cloud VPS in one fast place. Check temps and memory, run Docker apps, view live logs, and reach everything over home Wi-Fi or Tailscale — without opening router ports.
+            Manage your Mac, Linux GPU box, home server, and cloud VPS from one self-hosted dashboard. Check hardware and GPU metrics, manage Docker apps, push encrypted secrets, and stream live logs over LAN or Tailscale without opening router ports.
           </p>
           <div class="hero-cta">
-            <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
-              <span class="btn-label">Copy install command</span>
-            </button>
+            <a class="btn btn-primary btn-lg" href="./demo/">
+              Try the live demo
+            </a>
             <button type="button" class="cmd-pill" data-copy="curl -fsSL https://get.rackdeck.dev | sh" aria-label="Copy install command">
               <span class="prompt">$</span>
               <code>curl -fsSL https://get.rackdeck.dev | sh</code>
               <span class="cmd-copy">Copy</span>
             </button>
             <a class="btn btn-ghost btn-lg" href="https://github.com/ctsoftwarellc/rackdeck#set-up-with-an-ai-agent" target="_blank" rel="noopener noreferrer">
-              Let an AI agent set it up →
+              Set up with an AI agent →
             </a>
           </div>
           <div class="hero-reassure">
             <span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
-              No account needed
+              Prebuilt for macOS (Apple Silicon) and Linux (x86_64), Windows through WSL
             </span>
             <span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
-              Works great with Tailscale &amp; local Wi-Fi
-            </span>
-            <span>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg>
-              Zero tracking
+              No account or analytics
             </span>
           </div>
         </div>
@@ -1041,7 +1184,7 @@
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
             </div>
             <h3>Apple Silicon Mac</h3>
-            <p>See unified memory usage, Metal activity, and running local models like MLX alongside Docker containers — without heavy background agents.</p>
+            <p>See unified memory usage and running local models like MLX alongside Docker containers, using ~13 MB of RAM with no heavy background agent.</p>
             <div class="hw-tags">
               <span>Unified Memory</span>
               <span>MLX</span>
@@ -1054,11 +1197,11 @@
               <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="7" rx="1.5"/><rect x="2" y="13" width="20" height="7" rx="1.5"/><circle cx="6" cy="7.5" r="1" fill="currentColor"/><circle cx="6" cy="16.5" r="1" fill="currentColor"/></svg>
             </div>
             <h3>Cloud VPS &amp; mini PCs</h3>
-            <p>Keep your $5–$10 Lightsail, Hetzner, or closet mini PC right alongside your home hardware. Restart a stuck app in two clicks instead of hunting for IP addresses.</p>
+            <p>Keep your cloud VPS or closet mini PC right alongside your home hardware. Restart a stuck app in two clicks instead of hunting for IP addresses.</p>
             <div class="hw-tags">
               <span>Docker</span>
               <span>Live Logs</span>
-              <span>4.8 MB binary</span>
+              <span>~6 MB binary</span>
             </div>
           </div>
         </div>
@@ -1069,9 +1212,9 @@
     <section id="features">
       <div class="container">
         <div class="sec-head">
-          <span class="sec-kicker">Simple day-to-day control</span>
-          <h2>Everything you open SSH for, made effortless.</h2>
-          <p>Fast, clean, and respectful of your hardware. No bloated web stacks, no confusing firewall rules, and no babysitting a separate database.</p>
+          <span class="sec-kicker">Day-to-day control</span>
+          <h2>Common server tasks in one browser tab.</h2>
+          <p>Runs as one native binary. SQLite is included. Nothing else has to be running.</p>
         </div>
 
         <div class="bento-grid">
@@ -1080,7 +1223,7 @@
               <h3>Manage Docker apps &amp; live logs</h3>
               <span class="bento-pill">One click</span>
             </div>
-            <p>Launch new Docker containers, restart anything that freezes, and watch real-time logs stream straight into your browser — from your desk or your phone.</p>
+            <p>Deploy containers, restart anything that stalls, and follow live logs in your browser from your desk or phone. One-click updates keep every machine current without reinstalling.</p>
             <div class="bento-mini">
               <span><strong>open-webui</strong> · port :3000 · 1.4 GB RAM</span>
               <span class="ok">● Running</span>
@@ -1089,36 +1232,36 @@
 
           <div class="card bento-card">
             <div class="bento-top">
-              <h3>Reach home safely without router ports</h3>
+              <h3>Reach home without router ports</h3>
               <span class="bento-pill">LAN &amp; Tailscale ready</span>
             </div>
-            <p>Works out of the box on home Wi-Fi, Tailscale, WireGuard, or your own self-hosted <code>rackdeck-relay</code>. Don't want to run a VPN or relay yourself? Optional managed Connect (<code>*.rackdev.app</code>) is coming soon.</p>
+            <p>Detects Tailscale automatically on your network and works over home Wi-Fi or WireGuard. Want managed hosting and connectivity later? Rackdeck Cloud is coming soon.</p>
             <div class="bento-mini">
-              <span><strong>Tailscale &amp; LAN mDNS</strong> · zero router config</span>
+              <span><strong>Tailscale detection</strong> · read-only status check</span>
               <span class="ok">Available now</span>
             </div>
           </div>
 
           <div class="card bento-card">
             <div class="bento-top">
-              <h3>Pair a phone or add a box in seconds</h3>
-              <span class="bento-pill">QR &amp; Tailscale scan</span>
+              <h3>Encrypted secrets across machines</h3>
+              <span class="bento-pill">Synced securely</span>
             </div>
-            <p>Rackdeck automatically spots your local and Tailscale machines. Linking another PC takes one pasteable join command, and pairing your phone takes a quick 60-second QR scan.</p>
+            <p>Store an environment variable once, pick which machines receive it, and Rackdeck encrypts it at rest and in transit. New terminals on those machines pick it up right away.</p>
             <div class="bento-mini">
-              <span><strong>rackdeck agent --controller …</strong> · 15m token</span>
-              <span class="ok">Verified key</span>
+              <span><strong>CLAUDE_CODE_OAUTH_TOKEN</strong> · pushed to 2 machines</span>
+              <span class="ok">Encrypted</span>
             </div>
           </div>
 
           <div class="card bento-card">
             <div class="bento-top">
-              <h3>Browser terminal &amp; safe AI helper access</h3>
+              <h3>Built-in MCP server &amp; scoped tokens</h3>
               <span class="bento-pill">Locked down</span>
             </div>
-            <p>Need a real command line? Open the built-in browser terminal (locked strictly to your login). Want Claude or Codex to check why a container crashed? Give it a read-only MCP token — AI tools can never open a shell.</p>
+            <p>Connect Claude Code, Codex, or Cursor with a read or deploy token you can revoke at any time. App changes and deploys made by AI tools are written to the audit log, and tokens never get a shell.</p>
             <div class="bento-mini">
-              <span><strong>mcp[read]</strong> · node_health, logs_tail</span>
+              <span><strong>mcp[read]</strong> · node_health, container_logs_tail</span>
               <span class="ok">No shell access</span>
             </div>
           </div>
@@ -1130,41 +1273,41 @@
     <section id="setup">
       <div class="container">
         <div class="sec-head">
-          <span class="sec-kicker">30-second install</span>
-          <h2>One tiny file. Nothing else to maintain.</h2>
-          <p>Rackdeck compiles the server, web dashboard, and local SQLite database into one 4.8&nbsp;MB Rust binary. Install it once and you're done.</p>
+          <span class="sec-kicker">Quick setup</span>
+          <h2>One ~6 MB file. Nothing else to maintain.</h2>
+          <p>Rackdeck bundles the server, web dashboard, and SQLite storage into one ~6 MB Rust binary using about 13 MB of RAM. Prebuilt for macOS (Apple Silicon) and Linux (x86_64), with Windows supported through WSL.</p>
         </div>
 
         <div class="steps-grid">
           <div class="card step-card">
             <div class="step-num">1</div>
             <h3>Install Rackdeck</h3>
-            <p>Run the one-line installer on Linux or macOS. No Node.js, no Python venv, and no external Postgres container to keep alive.</p>
+            <p>Run the one-line installer on macOS (Apple Silicon), Linux (x86_64), or Windows through WSL. SQLite is included. Nothing else has to be running.</p>
           </div>
           <div class="card step-card">
             <div class="step-num">2</div>
             <h3>Open the dashboard</h3>
-            <p>Start the server with your password and open it in your browser. Local containers, GPUs, and Tailscale peers show up right away.</p>
+            <p>Start the server with your password and open it in your browser. Local containers and GPU stats appear automatically.</p>
           </div>
           <div class="card step-card">
             <div class="step-num">3</div>
             <h3>Link your other machines</h3>
-            <p>Paste a single join command on your GPU rig, Mac, or VPS over LAN or Tailscale — everything shows up in one dashboard right away.</p>
+            <p>Use the dashboard's + Add machine button to copy a one-time join command for your other machines over LAN or Tailscale. Machines connect out, so you open zero ports.</p>
           </div>
         </div>
 
         <div class="card term-card">
           <div class="term-head">
-            <span>Quick start · Linux &amp; macOS</span>
+            <span>Quick start · macOS (Apple Silicon), Linux (x86_64), Windows via WSL</span>
             <button type="button" class="term-copy" data-copy="curl -fsSL https://get.rackdeck.dev | sh">Copy installer</button>
           </div>
           <div class="term-body">
+            <div class="term-line dim"># Install and start the dashboard</div>
             <div class="term-line"><span class="p">$</span>curl -fsSL https://get.rackdeck.dev | sh</div>
-            <div class="term-line dim">  installed /usr/local/bin/rackdeck (4.7 MB · v0.1.0)</div>
-            <div class="term-line" style="margin-top:8px"><span class="p">$</span>RACKDECK_PASSWORD=your-password rackdeck</div>
-            <div class="term-line ok">  ✓ Dashboard ready at http://127.0.0.1:7420 (found 2 Tailscale peers)</div>
-            <div class="term-line" style="margin-top:8px"><span class="p">$</span>rackdeck agent --controller http://100.94.12.2:7420 --token rdj_9f2a…</div>
-            <div class="term-line ok">  ✓ home-rtx-5090 linked (RTX 5090 · 32 GB VRAM · ninfer 173 tok/s)</div>
+            <div class="term-line"><span class="p">$</span>RACKDECK_PASSWORD=your-password rackdeck</div>
+            <div class="term-line ok">  Dashboard listening on http://127.0.0.1:7420</div>
+            <div class="term-line dim" style="margin-top:10px"># Join another machine (the dashboard's + Add machine button gives you this command)</div>
+            <div class="term-line"><span class="p">$</span>curl -fsSL https://get.rackdeck.dev | sh -s -- --controller &lt;addresses&gt; --join rd_join_… --key &lt;key&gt;</div>
           </div>
         </div>
       </div>
@@ -1174,73 +1317,85 @@
     <section id="pricing">
       <div class="container">
         <div class="sec-head">
-          <span class="sec-kicker">Simple, fair pricing</span>
-          <h2>Free on your network. Pay only if you want us to host the bridge.</h2>
-          <p>Inspired by Home Assistant: the full open-source app is free forever. Optional paid plans cover the server costs of running a fast remote bridge or hosted hub for you.</p>
+          <span class="sec-kicker">Pricing</span>
+          <h2>Free to self-host. Optional managed Cloud.</h2>
+          <p>Run Rackdeck Community on your own hardware for free forever, or join the waitlist for managed hosting.</p>
+        </div>
+
+        <div class="billing-bar">
+          <div class="billing-toggle" role="radiogroup" aria-label="Rackdeck Cloud billing period">
+            <button
+              type="button"
+              class="billing-opt"
+              role="radio"
+              aria-checked="true"
+              data-billing="monthly"
+              tabindex="0"
+            >Monthly</button>
+            <button
+              type="button"
+              class="billing-opt"
+              role="radio"
+              aria-checked="false"
+              data-billing="annual"
+              tabindex="-1"
+            >Annual</button>
+          </div>
+          <span class="billing-save-hint is-muted" id="billing-save-hint">Save about 17% on annual</span>
         </div>
 
         <div class="pricing-grid">
           <div class="card price-card featured">
             <div class="price-head">
-              <span class="price-name">Self-Hosted</span>
+              <span class="price-name">Rackdeck Community</span>
               <span class="price-tag">Available now</span>
             </div>
             <div class="price-num">
-              <strong>$0</strong>
-              <span>/ forever</span>
+              <strong id="community-price-amount">Free</strong>
+              <span id="community-price-period">forever</span>
             </div>
-            <p class="price-desc">Open-source (Apache-2.0). Run on your own PC, Mac, or VPS over home Wi-Fi, Tailscale, or WireGuard today.</p>
+            <div class="price-meta" id="community-price-note">Open source under Apache-2.0</div>
+            <p class="price-desc">Own your infrastructure. Host and manage Rackdeck yourself.</p>
             <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Unlimited machines &amp; Docker apps</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>NVIDIA GPU &amp; Apple Silicon live stats</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Live logs, browser shell, QR pairing &amp; MCP</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hostable <code>rackdeck-relay</code> included</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Open source (Apache-2.0)</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Self-hosted</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Unlimited machines</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Monitoring including hardware and GPU</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Local MCP integration</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Encrypted secrets</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Community support</span></li>
             </ul>
-            <a class="btn btn-primary" href="#setup">Install free now</a>
-          </div>
-
-          <div class="card price-card">
-            <div class="price-head">
-              <span class="price-name">Rackdeck Connect</span>
-              <span class="price-tag">Coming soon</span>
-            </div>
-            <div class="price-num">
-              <strong>$9</strong>
-              <span>/ month · planned</span>
-            </div>
-            <p class="price-desc">Managed remote bridge so you can reach home over HTTPS from any phone or laptop — zero VPN or router setup.</p>
-            <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Dedicated <code>yourname.rackdev.app</code> HTTPS link</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Works behind any home router or CGNAT</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Cryptographic key auth &amp; isolated domain</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Optional — self-host <code>rackdeck-relay</code> free anytime</span></li>
-            </ul>
-            <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Join early-access list</a>
+            <a class="btn btn-primary" href="https://github.com/ctsoftwarellc/rackdeck#install" target="_blank" rel="noopener noreferrer">Get Started</a>
+            <p class="price-footnote">Prebuilt for macOS (Apple Silicon) and Linux (x86_64). Windows through WSL.</p>
           </div>
 
           <div class="card price-card">
             <div class="price-head">
               <span class="price-name">Rackdeck Cloud</span>
-              <span class="price-tag">Planned</span>
+              <span class="price-tag">Coming soon</span>
             </div>
             <div class="price-num">
-              <strong>$19</strong>
-              <span>/ month · planned</span>
+              <strong id="cloud-price-amount">$19</strong>
+              <span id="cloud-price-period">/ month</span>
             </div>
-            <p class="price-desc">Hosted dashboard at <code>app.rackdeck.dev</code> with encrypted backups so you only run lightweight agents on your boxes.</p>
+            <div class="price-meta" id="cloud-price-note" aria-live="polite">Billed monthly</div>
+            <p class="price-desc">We host the dashboard, the relay, updates and backups for you.</p>
             <ul class="price-list">
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Everything in Rackdeck Connect included</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Automatic encrypted database backups</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Connect your own home PCs, Macs &amp; VPSs</span></li>
-              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="20 6 9 17 4 12"/></svg><span>Keep your own cloud bills — zero VPS markup</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Managed dashboard hosting</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Managed secure connectivity</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Managed remote MCP access</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Automatic updates</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Automated backups</span></li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span>Email support</span></li>
             </ul>
-            <a class="btn btn-ghost" href="https://github.com/ctsoftwarellc/rackdeck/issues" target="_blank" rel="noopener noreferrer">Join early-access list</a>
+            <a class="btn btn-ghost" href="mailto:hello@rackdeck.dev?subject=Rackdeck%20Cloud%20waitlist">Join the Cloud waitlist</a>
+            <p class="price-footnote">Cloud opens soon. 14-day free trial at launch.</p>
           </div>
         </div>
 
         <div class="card compare-note">
           <p>
-            <strong>Already considering Coolify or Portainer?</strong> Coolify is awesome if you want a full Heroku-style web deployer with 300+ one-click templates. Rackdeck is a much lighter 4.8&nbsp;MB native app built for people who want one clean, secure place to manage a mixed setup — a home GPU PC, a Mac, and a cloud box or two — without installing a heavy platform.
+            <strong>Comparing with Coolify or Portainer?</strong> Coolify is built for full PaaS deployments with hundreds of templates. Rackdeck is a ~6 MB native binary (~13 MB RAM) built to monitor and manage a mixed fleet of Macs, GPU boxes, and Linux servers without maintaining a heavy stack.
           </p>
         </div>
       </div>
@@ -1257,19 +1412,19 @@
         <div class="faq-list">
           <details class="card faq-item" open>
             <summary>Do I have to open ports on my home router?</summary>
-            <p>Never. On home Wi-Fi or Tailscale, Rackdeck stays completely private on your network. If you use Rackdeck Connect, your machine makes a secure outbound connection so your router firewall stays closed.</p>
+            <p>No. On home Wi-Fi or Tailscale, Rackdeck stays on your private network. Joined machines connect out to the dashboard, and Rackdeck Cloud will also use outbound encrypted connections.</p>
           </details>
           <details class="card faq-item" open>
-            <summary>Why will hosted Connect links use *.rackdev.app instead of rackdeck.dev?</summary>
-            <p>Security isolation. Keeping personal remote dashboards on a separate domain (<code>yourname.rackdev.app</code>) prevents browser cookies and sessions from ever crossing over with <code>rackdeck.dev</code>.</p>
+            <summary>Which platforms are supported today?</summary>
+            <p>Prebuilt downloads are available for macOS (Apple Silicon) and Linux (x86_64), and Windows works through WSL with systemd enabled. Linux arm64 builds from source but isn't tested yet, and there's no prebuilt download.</p>
           </details>
           <details class="card faq-item">
             <summary>Does it combine my Mac and NVIDIA GPU memory into one GPU?</summary>
-            <p>No — each machine reports its own NVIDIA VRAM or Apple Silicon unified memory accurately. Rackdeck lets you see and manage both in one clean place rather than faking pooled memory.</p>
+            <p>No. Each machine reports its own NVIDIA VRAM or Apple Silicon unified memory accurately so you can see both in one dashboard.</p>
           </details>
           <details class="card faq-item">
-            <summary>Is it really open source, and does it phone home?</summary>
-            <p>Yes. The entire control panel and Connect relay are Apache-2.0 on GitHub with zero product telemetry. If you don't turn on Connect, Rackdeck never contacts our servers at all.</p>
+            <summary>Is it really open source, and does it send analytics?</summary>
+            <p>Yes, Rackdeck is Apache-2.0 on GitHub and sends zero product analytics. Read the full architecture and threat model in our <a href="https://github.com/ctsoftwarellc/rackdeck/blob/main/docs/security.md" target="_blank" rel="noopener noreferrer" style="color:var(--accent-soft);text-decoration:underline">security doc</a>.</p>
           </details>
         </div>
       </div>
@@ -1280,16 +1435,16 @@
       <div class="container">
         <div class="card cta-box">
           <div>
-            <h2>Ready to clean up your setup?</h2>
-            <p>Free forever on your own network. One 4.8&nbsp;MB binary, running in 30 seconds.</p>
+            <h2>Try it right in your browser or install it locally.</h2>
+            <p>Free forever to self-host. One ~6 MB binary using ~13 MB of RAM.</p>
           </div>
           <div class="cta-actions">
-            <button type="button" class="btn btn-primary btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
+            <a class="btn btn-primary btn-lg" href="./demo/">
+              Try the live demo
+            </a>
+            <button type="button" class="btn btn-ghost btn-lg" data-copy="curl -fsSL https://get.rackdeck.dev | sh">
               <span class="btn-label">Copy install command</span>
             </button>
-            <a class="btn btn-ghost btn-lg" href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">
-              Browse on GitHub
-            </a>
           </div>
         </div>
       </div>
@@ -1300,17 +1455,148 @@
     <div class="container footer-inner">
       <div>© 2026 CT Software LLC · Open source under Apache-2.0.</div>
       <div class="footer-links">
+        <a href="./demo/">Live demo</a>
         <a href="https://github.com/ctsoftwarellc/rackdeck" target="_blank" rel="noopener noreferrer">GitHub</a>
         <a href="https://github.com/ctsoftwarellc/rackdeck/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">Architecture</a>
-        <a href="https://github.com/ctsoftwarellc/rackdeck/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security</a>
+        <a href="https://github.com/ctsoftwarellc/rackdeck/blob/main/docs/security.md" target="_blank" rel="noopener noreferrer">Security</a>
         <a href="#pricing">Pricing</a>
       </div>
     </div>
   </footer>
+  <div id="copy-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 </div>
 
 <script>
 (function () {
+  // Single pricing config block (do not scatter prices across HTML)
+  const PRICING = {
+    community: {
+      amount: "Free",
+      period: "forever",
+      note: "Open source under Apache-2.0"
+    },
+    cloud: {
+      savingsHint: "Save about 17% on annual",
+      monthly: {
+        amount: "$19",
+        period: "/ month",
+        note: "Billed monthly",
+        badge: ""
+      },
+      annual: {
+        amount: "$190",
+        period: "/ year",
+        note: "",
+        badge: "Save about 17%"
+      }
+    }
+  };
+
+  // Pricing toggle (accessible radio group, zero layout shift)
+  const billingBtns = Array.from(document.querySelectorAll("[data-billing]"));
+  const communityAmount = document.getElementById("community-price-amount");
+  const communityPeriod = document.getElementById("community-price-period");
+  const communityNote = document.getElementById("community-price-note");
+  const cloudAmount = document.getElementById("cloud-price-amount");
+  const cloudPeriod = document.getElementById("cloud-price-period");
+  const cloudNote = document.getElementById("cloud-price-note");
+  const saveHint = document.getElementById("billing-save-hint");
+
+  function renderPricing(cycle) {
+    const plan = PRICING.cloud[cycle] || PRICING.cloud.monthly;
+    communityAmount.textContent = PRICING.community.amount;
+    communityPeriod.textContent = PRICING.community.period;
+    communityNote.textContent = PRICING.community.note;
+    cloudAmount.textContent = plan.amount;
+    cloudPeriod.textContent = plan.period;
+    cloudNote.textContent = "";
+    if (plan.badge) {
+      const pill = document.createElement("span");
+      pill.className = "price-save-pill";
+      pill.textContent = plan.badge;
+      cloudNote.appendChild(pill);
+    } else {
+      cloudNote.textContent = plan.note;
+    }
+    if (saveHint) {
+      saveHint.textContent = PRICING.cloud.savingsHint;
+      saveHint.classList.toggle("is-muted", cycle !== "annual");
+    }
+    billingBtns.forEach((btn) => {
+      const selected = btn.getAttribute("data-billing") === cycle;
+      btn.setAttribute("aria-checked", selected ? "true" : "false");
+      btn.setAttribute("tabindex", selected ? "0" : "-1");
+    });
+  }
+
+  billingBtns.forEach((btn, idx) => {
+    btn.addEventListener("click", () => renderPricing(btn.getAttribute("data-billing")));
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const nextIdx = (idx + 1) % billingBtns.length;
+        const nextBtn = billingBtns[nextIdx];
+        renderPricing(nextBtn.getAttribute("data-billing"));
+        nextBtn.focus();
+      }
+    });
+  });
+
+  renderPricing("monthly");
+
+  // Mobile navigation menu (accessible toggle, Escape closes, focus handling)
+  const navMenuBtn = document.getElementById("nav-menu-btn");
+  const mobileNav = document.getElementById("mobile-nav");
+  const iconMenuOpen = document.getElementById("icon-menu-open");
+  const iconMenuClose = document.getElementById("icon-menu-close");
+
+  function setMobileMenuOpen(open, restoreFocus) {
+    if (!navMenuBtn || !mobileNav) return;
+    navMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    navMenuBtn.setAttribute("aria-label", open ? "Close navigation menu" : "Open navigation menu");
+    mobileNav.hidden = !open;
+    if (iconMenuOpen) iconMenuOpen.style.display = open ? "none" : "block";
+    if (iconMenuClose) iconMenuClose.style.display = open ? "block" : "none";
+    if (open) {
+      const firstLink = mobileNav.querySelector("a");
+      if (firstLink) firstLink.focus();
+    } else if (restoreFocus) {
+      navMenuBtn.focus();
+    }
+  }
+
+  if (navMenuBtn && mobileNav) {
+    navMenuBtn.addEventListener("click", () => {
+      const isOpen = navMenuBtn.getAttribute("aria-expanded") === "true";
+      setMobileMenuOpen(!isOpen, false);
+    });
+    mobileNav.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", () => setMobileMenuOpen(false, false));
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && navMenuBtn.getAttribute("aria-expanded") === "true") {
+        e.preventDefault();
+        setMobileMenuOpen(false, true);
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (
+        navMenuBtn.getAttribute("aria-expanded") === "true" &&
+        !mobileNav.contains(e.target) &&
+        !navMenuBtn.contains(e.target)
+      ) {
+        setMobileMenuOpen(false, false);
+      }
+    });
+    const desktopMq = window.matchMedia("(min-width: 921px)");
+    const closeOnDesktop = (ev) => {
+      if (ev.matches && navMenuBtn.getAttribute("aria-expanded") === "true") {
+        setMobileMenuOpen(false, false);
+      }
+    };
+    if (desktopMq.addEventListener) desktopMq.addEventListener("change", closeOnDesktop);
+  }
+
   // Theme toggle
   const root = document.documentElement;
   const sun = document.getElementById("icon-sun");
@@ -1330,22 +1616,43 @@
     try { localStorage.setItem("rackdeck-theme", next); } catch (_) {}
   });
 
-  // Copy buttons
+  // Copy buttons (honest success/failure feedback + aria-live announcement)
+  const copyStatus = document.getElementById("copy-status");
+  function announceCopy(msg) {
+    if (!copyStatus) return;
+    copyStatus.textContent = "";
+    window.setTimeout(() => { copyStatus.textContent = msg; }, 10);
+  }
   document.querySelectorAll("[data-copy]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const text = btn.getAttribute("data-copy");
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
+    const target = btn.querySelector(".cmd-copy") || btn.querySelector(".btn-label") || btn;
+    const origText = target.textContent;
+    btn.addEventListener("click", async () => {
+      const text = btn.getAttribute("data-copy") || "";
+      let ok = false;
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch (_) {
+          ok = false;
+        }
       }
-      const target = btn.querySelector(".cmd-copy") || btn.querySelector(".btn-label") || btn;
-      const orig = target.textContent;
-      target.textContent = "Copied!";
-      if (target.classList) target.classList.add("copied");
       clearTimeout(btn._t);
+      if (ok) {
+        target.textContent = "Copied";
+        target.classList.add("copied");
+        target.classList.remove("copy-failed");
+        announceCopy("Copied to clipboard");
+      } else {
+        target.textContent = "Copy failed, select the text";
+        target.classList.remove("copied");
+        target.classList.add("copy-failed");
+        announceCopy("Copy failed, select the text");
+      }
       btn._t = setTimeout(() => {
-        target.textContent = orig;
-        if (target.classList) target.classList.remove("copied");
-      }, 1500);
+        target.textContent = origText;
+        target.classList.remove("copied", "copy-failed");
+      }, ok ? 1800 : 3000);
     });
   });
 
@@ -1367,9 +1674,9 @@
       ],
       logs: [
         ["20:54:11", "OK", "ninfer ready: Qwen3.8-27B on RTX 5090 (21.4 GB VRAM · 173 tok/s)"],
-        ["20:54:14", "OK", "GPU check: 64°C, 284W, fan 42% — thermals normal"],
+        ["20:54:14", "OK", "GPU check: 64°C, 284W, fan 42%, thermals normal"],
         ["20:54:19", "OK", "Tailscale mesh peer connected (100.94.12.8 · 18ms)"],
-        ["20:54:25", "AUDIT", "Read-only MCP check from Claude Code: home-rtx-5090 healthy"]
+        ["20:54:25", "AUDIT", "MCP deploy token (Codex) restarted open-webui on home-rtx-5090"]
       ]
     },
     mac: {
@@ -1384,7 +1691,7 @@
       apps: [
         { name: "mlx_lm (Qwen3.8-Flash)", type: "local model · :8090", status: "Running", note: "31.6 tok/s" },
         { name: "postgres-local", type: "docker · :5432", status: "Running", note: "312 MB RAM" },
-        { name: "rackdeck-agent", type: "background · 4.8 MB", status: "Running", note: "up 12 days" }
+        { name: "rackdeck-agent", type: "background · ~6 MB", status: "Running", note: "up 12 days" }
       ],
       logs: [
         ["20:54:02", "OK", "mlx_lm serving Qwen3.8-Flash-Next (31.6 tok/s on Metal)"],

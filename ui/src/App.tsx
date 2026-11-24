@@ -411,8 +411,11 @@ function dockerRunPreview(name: string, image: string, hostPort: string, contPor
   return parts.join(" \\\n  ");
 }
 
+const IS_DEMO = import.meta.env.MODE === "demo";
+
 export function App() {
   const route = useHash();
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("rackdeck.theme");
     if (saved === "light" || saved === "dark") return saved;
@@ -1169,6 +1172,31 @@ export function App() {
 
   return (
     <>
+      {IS_DEMO && !demoBannerDismissed && (
+        <div className="demo-banner" role="region" aria-label="Demo notice">
+          <div className="demo-banner-inner">
+            <span>
+              Live demo with sample data.{" "}
+              <a
+                href="https://github.com/ctsoftwarellc/rackdeck"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Install Rackdeck
+              </a>
+            </span>
+            <button
+              type="button"
+              className="demo-banner-close"
+              aria-label="Dismiss demo banner"
+              onClick={() => setDemoBannerDismissed(true)}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 56px Top Bar */}
       <header className="topbar">
         <div className="topbar-inner">
@@ -1180,6 +1208,11 @@ export function App() {
               </svg>
               <span>Rackdeck</span>
             </a>
+            {IS_DEMO && (
+              <span className="demo-badge" title="Live demo using sample data">
+                Sample data
+              </span>
+            )}
             {primaryNode && (
               <>
                 <span className="brand-sep">/</span>
@@ -1348,7 +1381,13 @@ export function App() {
                         <td>
                           <div className="machine-name">
                             <span className={`dot ${n.status === "online" ? "ok" : "off"}`} />
-                            <span>{n.name}</span>
+                            <a
+                              href={`#/machines/${encodeURIComponent(n.id)}`}
+                              className="machine-link"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {n.name}
+                            </a>
                           </div>
                           <div className="machine-sub">
                             {n.os} · {hwTag}
@@ -1694,7 +1733,7 @@ export function App() {
                       <span className="pill neutral">Coming soon</span>
                       <Help title="Rackdeck Connect">
                         <p>Reach your dashboard from anywhere without Tailscale. This machine opens an encrypted connection out to a relay, which gives you an address like <span className="mono">you.rackdev.app</span>.</p>
-                        <p>No router ports and no VPN app on your phone. The hosted relay ($9/mo) isn't live yet.</p>
+                        <p>No router ports and no VPN app on your phone. Hosted connectivity is part of Rackdeck Cloud, which isn't live yet. You can run your own relay today.</p>
                       </Help>
                     </h2>
                     {controller.relayConfigured && (<>
@@ -2141,7 +2180,7 @@ export function App() {
                   </button>
                 </>
               )}
-              <button type="button" className="btn btn-sm" onClick={closeDrawer}>✕</button>
+              <button type="button" className="btn btn-sm" aria-label="Close console drawer" onClick={closeDrawer}>✕</button>
             </div>
           </div>
 
@@ -2162,6 +2201,20 @@ export function App() {
                   ))
               )}
             </pre>
+          ) : IS_DEMO ? (
+            <div className="demo-term-disabled" role="status">
+              <p>
+                The browser terminal is disabled in this live demo.{" "}
+                <a
+                  href="https://github.com/ctsoftwarellc/rackdeck#install"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Install Rackdeck
+                </a>{" "}
+                on your own machine to run shell commands from the dashboard.
+              </p>
+            </div>
           ) : (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
               <pre className="logs-pre" style={{ flex: 1 }}>
@@ -2307,12 +2360,17 @@ export function App() {
         const expired = remaining === 0;
         return (
           <div className="backdrop" onClick={() => setPairInvite(null)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal" role="dialog" aria-label="Pair a machine" onClick={(e) => e.stopPropagation()}>
               <div className="card-head">
                 <h2 className="card-title">Pair a machine</h2>
-                <button type="button" className="btn btn-sm" onClick={() => setPairInvite(null)}>✕</button>
+                <button type="button" className="btn btn-sm" aria-label="Close pairing dialog" onClick={() => setPairInvite(null)}>✕</button>
               </div>
               <div className="card-pad" style={{ textAlign: "center" }}>
+                {IS_DEMO && (
+                  <div className="demo-note" role="status">
+                    Demo preview only. This QR code and join command are examples and will not connect a real machine.
+                  </div>
+                )}
                 <div style={{ filter: expired ? "blur(4px)" : "none", opacity: expired ? 0.5 : 1 }}>
                   <QrSvg uri={pairInvite.qrUri} />
                   <div style={{ marginBottom: 6 }}>
@@ -2404,7 +2462,7 @@ export function App() {
                       </button>
                     </div>
                     <p style={{ fontSize: 12, color: "var(--text-2)", margin: "8px 0 0" }}>
-                      Terminal and shell access is never grantable to MCP tokens in v0.1.
+                      Terminal and shell access is never grantable to MCP tokens.
                     </p>
                   </div>
                   <button type="submit" className="btn btn-primary">Create token</button>

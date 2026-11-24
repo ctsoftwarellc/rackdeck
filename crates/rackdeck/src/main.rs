@@ -199,6 +199,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+    if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h" | "help")) {
+        println!(
+            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Enable HttpOnly session login\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+    if matches!(args.get(1).map(|s| s.as_str()), Some("--version" | "-V")) {
+        println!("rackdeck {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.get(1).map(|s| s.as_str()) == Some("agent") {
         let mut controller = std::env::var("RACKDECK_CONTROLLER").unwrap_or_default();
         let mut token = std::env::var("RACKDECK_JOIN_TOKEN").unwrap_or_default();

@@ -69,8 +69,39 @@ function meterFillClass(pct: number): string {
   return pct >= 95 ? "m-fill crit" : pct >= 80 ? "m-fill warn" : "m-fill";
 }
 
+function legacyCopy(value: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function copyTextToClipboard(value: string): Promise<boolean> {
+  if (!window.isSecureContext || !navigator.clipboard?.writeText) {
+    return Promise.resolve(legacyCopy(value));
+  }
+  return navigator.clipboard
+    .writeText(value)
+    .then(() => true)
+    .catch(() => legacyCopy(value));
+}
+
 function Copy({ value, display, className }: { value: string; display?: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "ok" | "err">("idle");
   return (
     <button
       type="button"
@@ -78,14 +109,17 @@ function Copy({ value, display, className }: { value: string; display?: string; 
       title={`Copy ${value}`}
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard?.writeText(value).catch(() => {});
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
+        void copyTextToClipboard(value).then((ok) => {
+          setStatus(ok ? "ok" : "err");
+          window.setTimeout(() => setStatus("idle"), 1500);
+        });
       }}
     >
       <span>{display ?? value}</span>
-      {copied ? (
+      {status === "ok" ? (
         <span className="copy-ok">✓ Copied</span>
+      ) : status === "err" ? (
+        <span className="copy-ok" style={{ color: "var(--crit)" }}>Select &amp; ⌘C</span>
       ) : (
         <span className="copy-ico" aria-hidden="true">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1817,8 +1851,11 @@ export function App() {
                     <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>
                       Or enroll a Linux VPS / Mac / GPU rig (15m token)
                     </div>
-                    <div className="snippet-box" style={{ padding: "8px 10px" }}>
-                      <Copy value={joinCmd} display={joinCmd} />
+                    <div className="snippet-box" style={{ padding: "10px 12px" }}>
+                      <div style={{ position: "absolute", top: 8, right: 8 }}>
+                        <Copy value={joinCmd} display="Copy" />
+                      </div>
+                      <pre style={{ userSelect: "all" }}>{joinCmd}</pre>
                     </div>
                   </div>
                 )}

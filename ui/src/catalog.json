@@ -1,0 +1,152 @@
+[
+  {
+    "id": "jellyfin",
+    "name": "Jellyfin",
+    "blurb": "Stream your own movies and shows to your TV, phone and browser.",
+    "category": "Media",
+    "image": "jellyfin/jellyfin",
+    "hostPort": 8096,
+    "containerPort": 8096,
+    "volumes": [
+      "jellyfin-config:/config",
+      "jellyfin-cache:/cache"
+    ],
+    "folder": {
+      "path": "/media",
+      "label": "Folder with your movies and shows"
+    },
+    "next": "Open it, create your account, and add the /media folder as a library."
+  },
+  {
+    "id": "navidrome",
+    "name": "Navidrome",
+    "blurb": "Your music collection, playable from any browser or music app.",
+    "category": "Media",
+    "image": "deluan/navidrome",
+    "hostPort": 4533,
+    "containerPort": 4533,
+    "volumes": [
+      "navidrome-data:/data"
+    ],
+    "folder": {
+      "path": "/music",
+      "label": "Folder with your music"
+    },
+    "next": "Open it and create the admin account. It scans /music on its own."
+  },
+  {
+    "id": "audiobookshelf",
+    "name": "Audiobookshelf",
+    "blurb": "Audiobooks and podcasts, with the phone app keeping your place.",
+    "category": "Media",
+    "image": "ghcr.io/advplyr/audiobookshelf",
+    "hostPort": 13378,
+    "containerPort": 80,
+    "volumes": [
+      "audiobookshelf-config:/config",
+      "audiobookshelf-metadata:/metadata"
+    ],
+    "folder": {
+      "path": "/audiobooks",
+      "label": "Folder with your audiobooks"
+    },
+    "next": "Open it, create the root user, and add /audiobooks as a library."
+  },
+  {
+    "id": "adguard",
+    "name": "AdGuard Home",
+    "blurb": "Blocks ads and trackers for every device on your Wi-Fi.",
+    "category": "Home",
+    "image": "adguard/adguardhome",
+    "hostPort": 3000,
+    "containerPort": 3000,
+    "ports": [
+      "53:53/tcp",
+      "53:53/udp",
+      "8080:80"
+    ],
+    "volumes": [
+      "adguard-work:/opt/adguardhome/work",
+      "adguard-conf:/opt/adguardhome/conf"
+    ],
+    "note": "It needs port 53. On Ubuntu that port is often taken by the system's own DNS service, and install fails if so.",
+    "next": "Open it and finish setup. Then set your router's DNS server to this machine's address so every device uses it."
+  },
+  {
+    "id": "vaultwarden",
+    "name": "Vaultwarden",
+    "blurb": "Password manager that works with the Bitwarden apps and browser extensions.",
+    "category": "Home",
+    "image": "vaultwarden/server",
+    "hostPort": 8222,
+    "containerPort": 80,
+    "volumes": [
+      "vaultwarden-data:/data"
+    ],
+    "note": "Browsers only let you log in over HTTPS. Plan to put it behind HTTPS (Tailscale Serve is the easiest way) before you rely on it.",
+    "next": "Open it over HTTPS and create your account."
+  },
+  {
+    "id": "mealie",
+    "name": "Mealie",
+    "blurb": "Save recipes from any website and plan the week's meals.",
+    "category": "Home",
+    "image": "ghcr.io/mealie-recipes/mealie",
+    "hostPort": 9000,
+    "containerPort": 9000,
+    "volumes": [
+      "mealie-data:/app/data"
+    ],
+    "next": "Open it and log in with changeme@example.com / MyPassword, then change both."
+  },
+  {
+    "id": "uptime-kuma",
+    "name": "Uptime Kuma",
+    "blurb": "Checks your sites and apps every minute and tells you when one goes down.",
+    "category": "Tools",
+    "image": "louislam/uptime-kuma",
+    "hostPort": 3001,
+    "containerPort": 3001,
+    "volumes": [
+      "uptime-kuma:/app/data"
+    ],
+    "next": "Open it, create an account, and add the first thing to watch."
+  },
+  {
+    "id": "open-webui",
+    "name": "Open WebUI with Ollama",
+    "blurb": "A ChatGPT-style chat page running models on your own machine.",
+    "category": "AI",
+    "image": "ghcr.io/open-webui/open-webui:ollama",
+    "hostPort": 3080,
+    "containerPort": 8080,
+    "volumes": [
+      "ollama:/root/.ollama",
+      "open-webui:/app/backend/data"
+    ],
+    "gpu": true,
+    "note": "The download is several GB, so install can take a few minutes. On a Mac, Docker can't use the GPU, so models run slowly there.",
+    "next": "Open it, create the admin account, then pick a model to download in Settings.",
+    "modelServer": {
+      "image": "ghcr.io/open-webui/open-webui:main",
+      "volumes": [
+        "open-webui:/app/backend/data"
+      ]
+    }
+  },
+  {
+    "id": "ollama",
+    "name": "Ollama",
+    "blurb": "Runs open models and gives your tools an API to use them.",
+    "category": "AI",
+    "image": "ollama/ollama",
+    "hostPort": 11434,
+    "containerPort": 11434,
+    "volumes": [
+      "ollama:/root/.ollama"
+    ],
+    "gpu": true,
+    "note": "On a Mac, Docker can't use the GPU. The Ollama Mac app from ollama.com is much faster there.",
+    "next": "Point your tools at port 11434. To get a model, run: docker exec ollama ollama pull llama3.2"
+  }
+]

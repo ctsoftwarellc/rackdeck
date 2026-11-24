@@ -293,6 +293,15 @@ async fn list_nodes(State(state): State<ApiState>, headers: HeaderMap) -> Respon
     }
 }
 
+/// A machine's apps: this machine's from the local scan, others' from their last check-in.
+async fn all_apps_for(state: &ApiState, principal: &Principal, node_id: &str) -> rackdeck_core::CoreResult<Vec<ManagedApp>> {
+    let local = state.fleet_svc.list_apps(principal, node_id).await?; // also checks access
+    if node_id == state.local_node_id {
+        return Ok(local);
+    }
+    Ok(state.remote_apps.read().await.get(node_id).cloned().unwrap_or_default())
+}
+
 async fn list_node_apps(
     State(state): State<ApiState>,
     Path(node_id): Path<String>,
@@ -302,7 +311,7 @@ async fn list_node_apps(
         Ok(p) => p,
         Err(r) => return r,
     };
-    match state.fleet_svc.list_apps(&principal, &node_id).await {
+    match all_apps_for(&state, &principal, &node_id).await {
         Ok(apps) => Json(serde_json::json!({ "apps": apps })).into_response(),
         Err(e) => err_res(e),
     }
@@ -1550,6 +1559,111 @@ struct McpRpcRequest {
     params: Option<serde_json::Value>,
 }
 
+/// The one-click apps, shared with the dashboard's catalog page.
+fn catalog() -> Vec<serde_json::Value> {
+    serde_json::from_str(include_str!("../../../ui/src/catalog.json")).unwrap_or_default()
+}
+
+fn mcp_tools() -> serde_json::Value {
+    let node = serde_json::json!({ "type": "string", "description": "Machine id from node_health. Defaults to the dashboard's own machine." });
+    let manage = "Needs an assistant allowed to manage apps.";
+    serde_json::json!([
+        { "name": "node_health", "description": "List the machines with status, hardware and latest CPU, memory, disk and GPU use.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "container_logs_tail", "description": "Read the last lines of an app's logs.",
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node, "appId": { "type": "string", "description": "App id from the machine's app list, e.g. docker:jellyfin" },
+              "lines": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 } }, "required": ["appId"] } },
+        { "name": "app_action", "description": format!("Start, stop or restart an app. {manage}"),
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node, "appId": { "type": "string" }, "action": { "type": "string", "enum": ["start", "stop", "restart"] } },
+              "required": ["appId", "action"] } },
+        { "name": "list_apps", "description": "List the apps on every machine: containers and local model servers (ninfer, Ollama, vLLM, MLX), with ids, ports and state.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "list_catalog_apps", "description": "List the apps Rackdeck can install in one step (Jellyfin, AdGuard Home, Open WebUI and others), with what each does and its port. Prefer these over deploy_app.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "install_app", "description": format!("Install an app from list_catalog_apps on a machine, with tested ports and saved data. Uses the GPU when the machine has an NVIDIA one. Returns the address to open. {manage} Media folders can't be attached this way; the owner adds those in the dashboard."),
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node, "app": { "type": "string", "description": "App id from list_catalog_apps, e.g. jellyfin" },
+              "modelServer": { "type": "string", "description": "For apps with modelServer (Open WebUI): use a model server already running on the network instead of downloading models, e.g. http://192.168.1.78:8080 (find them with list_apps)" },
+              "modelServerType": { "type": "string", "enum": ["openai", "ollama"], "default": "openai", "description": "ollama for Ollama; openai for ninfer, vLLM, MLX and other OpenAI-style servers" },
+              "modelServerKey": { "type": "string", "description": "API key, if the model server needs one" } },
+              "required": ["nodeId", "app"] } },
+        { "name": "deploy_app", "description": format!("Run any Docker image as an app. Use install_app instead when the app is in the catalog. {manage}"),
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node,
+              "name": { "type": "string", "description": "Container name: letters, digits, - and _" },
+              "image": { "type": "string" },
+              "hostPort": { "type": "integer" }, "containerPort": { "type": "integer" },
+              "ports": { "type": "array", "items": { "type": "string" }, "description": "Extra port maps like 53:53/udp" },
+              "volumes": { "type": "array", "items": { "type": "string" }, "description": "Named volumes like app-data:/data" },
+              "env": { "type": "object", "additionalProperties": { "type": "string" } },
+              "gpu": { "type": "boolean" } },
+              "required": ["name", "image"] } }
+    ])
+}
+
+/// Open WebUI settings for a model server elsewhere on the network.
+fn open_webui_model_env(url: &str, kind: &str, key: Option<&str>) -> std::collections::BTreeMap<String, String> {
+    let url = url.trim_end_matches('/');
+    let mut env = std::collections::BTreeMap::new();
+    if kind == "ollama" {
+        env.insert("OLLAMA_BASE_URL".into(), url.to_string());
+    } else {
+        let base = if url.ends_with("/v1") { url.to_string() } else { format!("{url}/v1") };
+        env.insert("OPENAI_API_BASE_URL".into(), base);
+        env.insert("OPENAI_API_KEY".into(), key.filter(|k| !k.is_empty()).unwrap_or("none").to_string());
+        env.insert("ENABLE_OLLAMA_API".into(), "false".into());
+    }
+    env
+}
+
+async fn install_catalog_app(state: &ApiState, principal: &Principal, args: &serde_json::Value) -> rackdeck_core::CoreResult<String> {
+    let node_id = args.get("nodeId").and_then(|v| v.as_str()).unwrap_or(&state.local_node_id).to_string();
+    let want = args.get("app").and_then(|v| v.as_str()).unwrap_or_default();
+    let Some(app) = catalog().into_iter().find(|a| a["id"] == want) else {
+        return Err(CoreError::NotFound(format!("no catalog app `{want}`; call list_catalog_apps")));
+    };
+    let node = state.fleet_repo.get_node(&node_id).await?.ok_or_else(|| CoreError::NotFound(format!("no machine `{node_id}`")))?;
+    let nvidia = matches!(node.hw.accel, rackdeck_core::Accelerator::Nvidia { driver_loaded: true, .. });
+    let strs = |k: &str| -> Vec<String> {
+        app[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    let mut spec = DeploySpec {
+        name: app["id"].as_str().unwrap_or_default().to_string(),
+        image: app["image"].as_str().unwrap_or_default().to_string(),
+        host_port: app["hostPort"].as_u64().map(|p| p as u16),
+        container_port: app["containerPort"].as_u64().map(|p| p as u16),
+        env: Default::default(),
+        ports: strs("ports"),
+        volumes: strs("volumes"),
+        gpu: app["gpu"].as_bool().unwrap_or(false) && nvidia,
+    };
+    if let Some(url) = args.get("modelServer").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) {
+        let alt = &app["modelServer"];
+        if !alt.is_object() {
+            return Err(CoreError::InvalidInput(format!("{want} doesn't connect to a model server")));
+        }
+        spec.image = alt["image"].as_str().unwrap_or_default().to_string();
+        spec.volumes = alt["volumes"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        spec.gpu = false;
+        spec.env = open_webui_model_env(
+            url,
+            args.get("modelServerType").and_then(|v| v.as_str()).unwrap_or("openai"),
+            args.get("modelServerKey").and_then(|v| v.as_str()),
+        );
+    }
+    state.fleet_svc.deploy_app(principal, &node_id, spec).await?;
+    let host = node.lan_ip.or(node.tailscale_ip).unwrap_or_else(|| node.name.clone());
+    Ok(format!(
+        "{} is running on {}. Open http://{host}:{}\nNext: {}",
+        app["name"].as_str().unwrap_or_default(),
+        node.name,
+        app["hostPort"],
+        app["next"].as_str().unwrap_or_default()
+    ))
+}
+
 async fn mcp_handler(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -1561,7 +1675,12 @@ async fn mcp_handler(
     };
     let id = rpc.id.unwrap_or(serde_json::Value::Null);
 
+    // Notifications (like notifications/initialized) get no reply.
+    if rpc.method.starts_with("notifications/") {
+        return StatusCode::ACCEPTED.into_response();
+    }
     match rpc.method.as_str() {
+        "ping" => Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} })).into_response(),
         "initialize" => Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1576,12 +1695,7 @@ async fn mcp_handler(
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "tools": [
-                    { "name": "node_health", "description": "List managed Rackdeck servers and latest telemetry" },
-                    { "name": "container_logs_tail", "description": "Read bounded logs for an app or container on a node" },
-                    { "name": "app_action", "description": "Start, stop, or restart a container (requires deploy scope)" },
-                    { "name": "deploy_app", "description": "Deploy a Docker container with ports and env vars (requires deploy scope)" }
-                ]
+                "tools": mcp_tools()
             }
         }))
         .into_response(),
@@ -1651,6 +1765,18 @@ async fn mcp_handler(
                         Err(e) => Err(CoreError::InvalidInput(format!("invalid deploy spec: {e}"))),
                     }
                 }
+                "list_apps" => async {
+                    let mut out = Vec::new();
+                    for n in state.fleet_svc.list_nodes(&principal).await? {
+                        if let Ok(apps) = all_apps_for(&state, &principal, &n.id).await {
+                            out.extend(apps);
+                        }
+                    }
+                    Ok(serde_json::to_string_pretty(&out).unwrap_or_default())
+                }
+                .await,
+                "list_catalog_apps" => Ok(serde_json::to_string_pretty(&catalog()).unwrap_or_default()),
+                "install_app" => install_catalog_app(&state, &principal, &args).await,
                 _ => Err(CoreError::NotFound(format!("unknown tool {name}"))),
             };
 
@@ -1661,7 +1787,13 @@ async fn mcp_handler(
                     "result": { "content": [{ "type": "text", "text": text }] }
                 }))
                 .into_response(),
-                Err(e) => err_res(e),
+                // Tool failures go back as a result the assistant can read and act on.
+                Err(e) => Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "content": [{ "type": "text", "text": e.to_string() }], "isError": true }
+                }))
+                .into_response(),
             }
         }
         _ => (

@@ -922,7 +922,8 @@ mod tests {
             Some(token),
         )
         .await;
-        assert!(mcp_denied.contains("403 Forbidden"), "expected 403: {mcp_denied}");
+        // MCP tool failures come back as a readable result, not an HTTP error.
+        assert!(mcp_denied.contains("\"isError\":true") && mcp_denied.to_lowercase().contains("forbidden"), "expected a refused tool call: {mcp_denied}");
 
         // 5. Enable Rackdeck Connect (Ed25519 challenge-response + binary wire proxy)
         let toggle_res = http_post_json(
@@ -987,7 +988,7 @@ mod tests {
             Some(token),
         )
         .await;
-        assert!(deploy_denied.contains("403 Forbidden"), "expected 403: {deploy_denied}");
+        assert!(deploy_denied.contains("\"isError\":true") && deploy_denied.to_lowercase().contains("forbidden"), "expected a refused tool call: {deploy_denied}");
 
         // 9. UI asks for logs on the remote node: controller queues the command, the agent
         //    picks it up on check-in and posts the result on the next one.

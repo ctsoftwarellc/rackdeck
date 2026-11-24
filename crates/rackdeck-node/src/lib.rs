@@ -108,6 +108,32 @@ async fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+/// A model server in one `ps -eo pid,args` line: (runner, port). Looks at the program itself, not
+/// any word in the line, so an editor or grep mentioning "ninfer" doesn't count.
+fn detect_ai_runner(line: &str) -> Option<(&'static str, u16)> {
+    let args: Vec<&str> = line.split_whitespace().skip(1).collect();
+    let exe = args.first()?.rsplit('/').next()?;
+    let has = |t: &str| args.iter().any(|a| *a == t);
+    let (runner, default_port) = if exe.starts_with("ninfer") {
+        ("ninfer", 8080)
+    } else if exe == "ollama" && has("serve") {
+        ("ollama", 11434)
+    } else if (exe == "vllm" && has("serve")) || args.iter().any(|a| a.starts_with("vllm.entrypoints")) {
+        ("vllm", 8000)
+    } else if exe.starts_with("mlx_lm.server") || has("mlx_lm.server") {
+        ("mlx", 8080)
+    } else {
+        return None;
+    };
+    let port = args
+        .iter()
+        .enumerate()
+        .find_map(|(i, a)| a.strip_prefix("--port=").or((*a == "--port").then(|| args.get(i + 1).copied()).flatten()))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(default_port);
+    Some((runner, port))
+}
+
 /// `docker run` flags for a spec's extra ports, volumes and GPU. Rejects anything malformed.
 fn extra_run_args(spec: &DeploySpec) -> Result<Vec<String>, CoreError> {
     let mut args: Vec<String> = Vec::new();
@@ -396,14 +422,14 @@ impl NodeOps for LocalNodeAdapter {
 
         // 2. Native local AI runners (ninfer, mlx_lm, vllm, ollama)
         if let Some(ps_out) = run_cmd("ps", &["-eo", "pid,args"]).await {
-            let checks = [
-                ("ninfer", "ninfer"),
-                ("mlx_lm.server", "mlx"),
-                ("vllm", "vllm"),
-                ("ollama serve", "ollama"),
-            ];
-            for (needle, runner) in checks {
-                if ps_out.lines().any(|l| l.contains(needle)) {
+            let mut seen: Vec<&str> = Vec::new();
+            for line in ps_out.lines().skip(1) {
+                let Some((runner, port)) = detect_ai_runner(line) else { continue };
+                if seen.contains(&runner) {
+                    continue;
+                }
+                seen.push(runner);
+                {
                     apps.push(ManagedApp {
                         id: format!("ai:{runner}"),
                         node_id: self.node_id.clone(),
@@ -413,7 +439,7 @@ impl NodeOps for LocalNodeAdapter {
                         image: None,
                         model: Some("local model".into()),
                         state: AppState::Running,
-                        ports: vec![8080],
+                        ports: vec![port],
                         domains: vec![],
                         usage: AppUsage {
                             cpu: 0.0,
@@ -593,6 +619,17 @@ mod name_tests {
 #[cfg(test)]
 mod deploy_args_tests {
     use super::*;
+
+    #[test]
+    fn ai_runners() {
+        assert_eq!(detect_ai_runner("12 /opt/ninfer/ninfer --model q --port 9000"), Some(("ninfer", 9000)));
+        assert_eq!(detect_ai_runner("12 ollama serve"), Some(("ollama", 11434)));
+        assert_eq!(detect_ai_runner("12 python -m vllm.entrypoints.openai.api_server --port=8001"), Some(("vllm", 8001)));
+        assert_eq!(detect_ai_runner("12 python -m mlx_lm.server"), Some(("mlx", 8080)));
+        assert_eq!(detect_ai_runner("12 ugrep -i ninfer"), None);
+        assert_eq!(detect_ai_runner("12 vim /src/ninfer/main.rs"), None);
+        assert_eq!(detect_ai_runner("12 ollama run llama3"), None);
+    }
 
     #[test]
     fn ports_volumes_gpu() {

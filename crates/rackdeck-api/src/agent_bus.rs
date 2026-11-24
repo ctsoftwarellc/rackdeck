@@ -3,13 +3,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rackdeck_core::{
-    now_unix_secs, AppAction, CoreError, CoreResult, DeploySpec, ManagedApp, RemoteDispatch,
+    now_unix_secs, AppAction, AppActionResult, CoreError, CoreResult, DeploySpec, ManagedApp,
+    RemoteDispatch,
 };
 use rackdeck_protocol::{AgentCommand, AgentCommandResult, AgentOp, AgentOutput};
 use tokio::sync::{oneshot, Mutex};
 
 /// Agents poll every 2s; anything quieter than this is treated as offline.
 const OFFLINE_AFTER_SECS: u64 = 15;
+const IMAGE_OPERATION_TIMEOUT: Duration = Duration::from_secs(990);
+
+#[derive(Clone, Copy)]
+struct Checkin {
+    at: u64,
+    app_management: bool,
+}
 
 /// Queues commands for remote agents and hands them out on check-in.
 /// ponytail: in-memory only, so commands in flight are lost on controller restart (callers just get a timeout).
@@ -17,7 +25,7 @@ const OFFLINE_AFTER_SECS: u64 = 15;
 pub struct AgentBus {
     queued: Mutex<HashMap<String, Vec<AgentCommand>>>,
     waiting: Mutex<HashMap<String, oneshot::Sender<Result<AgentOutput, String>>>>,
-    last_seen: Mutex<HashMap<String, u64>>,
+    last_seen: Mutex<HashMap<String, Checkin>>,
 }
 
 impl AgentBus {
@@ -26,11 +34,12 @@ impl AgentBus {
         &self,
         node_id: &str,
         results: Vec<AgentCommandResult>,
+        app_management: bool,
     ) -> Vec<AgentCommand> {
         self.last_seen
             .lock()
             .await
-            .insert(node_id.to_string(), now_unix_secs());
+            .insert(node_id.to_string(), Checkin { at: now_unix_secs(), app_management });
         {
             let mut waiting = self.waiting.lock().await;
             for r in results {
@@ -48,7 +57,7 @@ impl AgentBus {
         let mut seen = self.last_seen.lock().await;
         let stale: Vec<String> = seen
             .iter()
-            .filter(|(_, &t)| now.saturating_sub(t) > OFFLINE_AFTER_SECS)
+            .filter(|(_, checkin)| now.saturating_sub(checkin.at) > OFFLINE_AFTER_SECS)
             .map(|(id, _)| id.clone())
             .collect();
         for id in &stale {
@@ -64,13 +73,19 @@ impl AgentBus {
                     "{node_id} isn't connected to this controller"
                 )))
             }
-            Some(t) if now_unix_secs().saturating_sub(t) > OFFLINE_AFTER_SECS => {
+            Some(checkin) if now_unix_secs().saturating_sub(checkin.at) > OFFLINE_AFTER_SECS => {
                 return Err(CoreError::Runtime(format!(
                     "{node_id} is offline (last check-in {}s ago)",
-                    now_unix_secs().saturating_sub(t)
+                    now_unix_secs().saturating_sub(checkin.at)
                 )))
             }
-            _ => {}
+            Some(checkin) => {
+                if matches!(&op, AgentOp::AppAction { action: AppAction::Remove { .. } | AppAction::Update, .. })
+                    && !checkin.app_management
+                {
+                    return Err(CoreError::AgentUpgradeRequired);
+                }
+            }
         }
 
         let id = format!("cmd-{}", uuid::Uuid::new_v4().simple());
@@ -121,13 +136,20 @@ fn unexpected() -> CoreError {
 
 #[async_trait]
 impl RemoteDispatch for AgentBus {
-    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<()> {
+    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<AppActionResult> {
         let op = AgentOp::AppAction {
             app_id: app_id.to_string(),
             action,
         };
-        match self.run(node_id, op, Duration::from_secs(30)).await? {
-            AgentOutput::Done => Ok(()),
+        let timeout = match action {
+            AppAction::Update => IMAGE_OPERATION_TIMEOUT,
+            AppAction::Remove { .. } => Duration::from_secs(45),
+            _ => Duration::from_secs(30),
+        };
+        match self.run(node_id, op, timeout).await? {
+            AgentOutput::Done => Ok(AppActionResult::Done),
+            AgentOutput::AppUpdated { changed: true } => Ok(AppActionResult::Updated),
+            AgentOutput::AppUpdated { changed: false } => Ok(AppActionResult::AlreadyUpToDate),
             _ => Err(unexpected()),
         }
     }
@@ -135,7 +157,7 @@ impl RemoteDispatch for AgentBus {
     async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp> {
         // Agent pulls for up to 15 min, runs for up to 60s, plus a check-in round trip.
         match self
-            .run(node_id, AgentOp::Deploy { spec }, Duration::from_secs(990))
+            .run(node_id, AgentOp::Deploy { spec }, IMAGE_OPERATION_TIMEOUT)
             .await?
         {
             AgentOutput::App { app } => Ok(app),
@@ -173,7 +195,7 @@ mod tests {
             "unknown node must fail fast"
         );
 
-        bus.checkin("node-pc", vec![]).await;
+        bus.checkin("node-pc", vec![], false).await;
         let caller = {
             let bus = bus.clone();
             tokio::spawn(async move { bus.tail_logs("node-pc", "docker:abc", 10).await })
@@ -181,7 +203,7 @@ mod tests {
         let mut cmds = Vec::new();
         while cmds.is_empty() {
             tokio::task::yield_now().await;
-            cmds = bus.checkin("node-pc", vec![]).await;
+            cmds = bus.checkin("node-pc", vec![], false).await;
         }
         assert!(
             matches!(&cmds[0].op, AgentOp::Logs { app_id, lines: 10 } if app_id == "docker:abc")
@@ -193,7 +215,49 @@ mod tests {
                 lines: vec!["hello".into()],
             }),
         };
-        assert!(bus.checkin("node-pc", vec![reply]).await.is_empty());
+        assert!(bus.checkin("node-pc", vec![reply], false).await.is_empty());
         assert_eq!(caller.await.unwrap().unwrap(), vec!["hello".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn old_agents_are_not_sent_new_app_actions() {
+        let bus = AgentBus::default();
+        bus.checkin("node-pc", vec![], false).await;
+        for action in [AppAction::Update, AppAction::Remove { delete_data: false }] {
+            assert!(matches!(
+                bus.app_action("node-pc", "docker:abc", action).await,
+                Err(CoreError::AgentUpgradeRequired)
+            ));
+        }
+        assert!(bus.checkin("node-pc", vec![], false).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_app_actions_round_trip() {
+        let bus = AgentBus::default();
+        let node_id = "node-pc";
+        for (action, reply, result) in [
+            (AppAction::Remove { delete_data: true }, AgentOutput::Done, AppActionResult::Done),
+            (AppAction::Update, AgentOutput::AppUpdated { changed: false }, AppActionResult::AlreadyUpToDate),
+        ] {
+            bus.checkin(node_id, vec![], true).await;
+            let checkin = async {
+                let cmd = loop {
+                    if let Some(cmd) = bus.checkin(node_id, vec![], true).await.pop() {
+                        break cmd;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                let wire = serde_json::to_string(&cmd).unwrap();
+                let cmd: AgentCommand = serde_json::from_str(&wire).unwrap();
+                assert!(matches!(cmd.op, AgentOp::AppAction { app_id, action: sent }
+                    if app_id == "docker:abc" && sent == action));
+                bus.checkin(node_id, vec![AgentCommandResult { id: cmd.id, result: Ok(reply) }], true).await;
+            };
+            let (returned, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(bus.app_action(node_id, "docker:abc", action), checkin)
+            }).await.unwrap();
+            assert_eq!(returned.unwrap(), result);
+        }
     }
 }

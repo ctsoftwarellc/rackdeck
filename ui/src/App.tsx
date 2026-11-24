@@ -22,6 +22,22 @@ type ParsedRoute =
   | { page: "access" }
   | { page: "audit" };
 
+const appActionProgress = {
+  start: "Starting…",
+  stop: "Stopping…",
+  restart: "Restarting…",
+  remove: "Removing…",
+  update: "Updating…",
+};
+
+function appKey(app: ManagedApp) {
+  return `${app.nodeId}/${app.name}`;
+}
+
+function updateDot(app: ManagedApp) {
+  return app.updateAvailable && <span className="dot warn" role="img" title="Update available" aria-label="Update available" />;
+}
+
 function parseHash(raw: string): ParsedRoute {
   const clean = raw.replace(/^#/, "") || "/";
   const m = clean.match(/^\/machines\/([^/?#]+)/);
@@ -459,6 +475,14 @@ export function App() {
   const [appFilter, setAppFilter] = useState<"all" | "docker" | "ai">("all");
   const [pendingApp, setPendingApp] = useState<Record<string, string>>({});
   const [inlineErr, setInlineErr] = useState<string | null>(null);
+  const [appMessage, setAppMessage] = useState<string | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<ManagedApp | null>(null);
+  const removeDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (removeTarget && removeDialog.current && !removeDialog.current.open) {
+      removeDialog.current.showModal();
+    }
+  }, [removeTarget]);
 
   // Auth gate (when server sets RACKDECK_PASSWORD)
   const [authState, setAuthState] = useState<{ checked: boolean; required: boolean; authed: boolean }>({
@@ -594,7 +618,6 @@ export function App() {
           });
         } else if (msg.t === "apps") {
           setApps(msg.apps);
-          setPendingApp({});
         } else if (msg.t === "tm") {
           setSamples((prev) => {
             const list = prev[msg.nodeId] ?? [];
@@ -980,21 +1003,72 @@ export function App() {
     }
   }
 
-  async function runAppAction(app: ManagedApp, action: "start" | "stop" | "restart") {
+  async function runAppAction(app: ManagedApp, action: keyof typeof appActionProgress, deleteData = false) {
+    const key = appKey(app);
     setInlineErr(null);
-    setPendingApp((prev) => ({ ...prev, [app.id]: `${action}ing` }));
-    const res = await fetch(`/api/v1/nodes/${app.nodeId}/apps/${encodeURIComponent(app.id)}/${action}`, {
-      method: "POST",
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Action failed" }));
-      setInlineErr(err.error ?? "Action failed");
+    setAppMessage(null);
+    setPendingApp((prev) => ({ ...prev, [key]: appActionProgress[action] }));
+    try {
+      const query = deleteData ? "?deleteData=true" : "";
+      const url = `/api/v1/nodes/${encodeURIComponent(app.nodeId)}/apps/${encodeURIComponent(app.id)}/${action}${query}`;
+      const res = await fetch(url, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "App action failed.");
+      if (action === "remove") {
+        setApps((prev) => prev.filter((item) => item.nodeId !== app.nodeId || item.id !== app.id));
+      }
+      setAppMessage(data.message ?? (action === "remove" ? "App removed." : null));
+    } catch (e) {
+      setInlineErr(e instanceof Error ? e.message : "App action failed.");
+    } finally {
       setPendingApp((prev) => {
         const next = { ...prev };
-        delete next[app.id];
+        delete next[key];
         return next;
       });
     }
+  }
+
+  function renderAppControls(app: ManagedApp, withLogs = false) {
+    const busy = Boolean(pendingApp[appKey(app)]);
+    const updateReason = app.canUpdate === undefined
+      ? "Update Rackdeck on this machine first."
+      : "This app has no saved Rackdeck install settings.";
+    return (
+      <div className="app-controls">
+        {app.type !== "system" && (app.state === "running" ? (
+          <>
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={() => runAppAction(app, "restart")}>Restart</button>
+            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => runAppAction(app, "stop")}>Stop</button>
+          </>
+        ) : (
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => runAppAction(app, "start")}>Start</button>
+        ))}
+        {app.type === "docker" && (
+          <>
+            <span title={app.canUpdate ? undefined : updateReason} tabIndex={app.canUpdate ? undefined : 0}>
+              <button type="button" className="btn btn-sm" disabled={busy || !app.canUpdate}
+                onClick={() => runAppAction(app, "update")}>Update</button>
+            </span>
+            <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => setRemoveTarget(app)}>Remove</button>
+          </>
+        )}
+        {withLogs && <button type="button" className="btn btn-sm" disabled={busy} onClick={() => openLogs(app)}>Logs</button>}
+      </div>
+    );
+  }
+
+  function renderAppFeedback(nodeId?: string) {
+    const updating = Object.entries(pendingApp).some(([key, progress]) =>
+      progress === appActionProgress.update && (!nodeId || key.startsWith(nodeId + "/")));
+    return (
+      <>
+        {inlineErr && <div className="inline-err" role="alert">{inlineErr}</div>}
+        {(updating || appMessage) && (
+          <p className="app-feedback" role="status">{updating ? "Updating… this can take a few minutes" : appMessage}</p>
+        )}
+      </>
+    );
   }
 
   async function submitLogin(e: React.FormEvent) {
@@ -1780,7 +1854,7 @@ export function App() {
                 </div>
               </div>
 
-              {inlineErr && <div className="inline-err">{inlineErr}</div>}
+              {renderAppFeedback(detailNode.id)}
 
               <div className="tbl-wrap">
                 <table className="tbl">
@@ -1798,13 +1872,13 @@ export function App() {
                       .filter((a) => a.nodeId === detailNode.id)
                       .filter((a) => appFilter === "all" || a.type === appFilter)
                       .map((app) => {
-                        const pend = pendingApp[app.id];
-                        const isSystem = app.type === "system";
+                        const pend = pendingApp[appKey(app)];
                         return (
                           <tr key={app.id}>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                 <span style={{ fontWeight: 500 }}>{app.name}</span>
+                                {updateDot(app)}
                                 {app.ports.map((p) => (
                                   <Copy key={p} value={`${detailNode.lanIp ?? "127.0.0.1"}:${p}`} display={`:${p}`} />
                                 ))}
@@ -1832,41 +1906,7 @@ export function App() {
                             </td>
                             <td className="mono hide-sm">{app.model ?? app.image ?? "—"}</td>
                             <td style={{ textAlign: "right" }}>
-                              <div style={{ display: "inline-flex", gap: 6 }}>
-                                {!isSystem && app.state !== "running" && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm"
-                                    disabled={Boolean(pend)}
-                                    onClick={() => runAppAction(app, "start")}
-                                  >
-                                    Start
-                                  </button>
-                                )}
-                                {!isSystem && app.state === "running" && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm"
-                                      disabled={Boolean(pend)}
-                                      onClick={() => runAppAction(app, "restart")}
-                                    >
-                                      Restart
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm btn-danger"
-                                      disabled={Boolean(pend)}
-                                      onClick={() => runAppAction(app, "stop")}
-                                    >
-                                      Stop
-                                    </button>
-                                  </>
-                                )}
-                                <button type="button" className="btn btn-sm" onClick={() => openLogs(app)}>
-                                  Logs
-                                </button>
-                              </div>
+                              {renderAppControls(app, true)}
                             </td>
                           </tr>
                         );
@@ -2181,7 +2221,26 @@ export function App() {
         )}
 
         {route.page === "apps" && (
-          <AppCatalog nodes={nodes} apps={apps} onInstalled={addInstalledApp} onCustomImage={() => openCustomImage()} />
+          <AppCatalog nodes={nodes} apps={apps} onInstalled={addInstalledApp} onCustomImage={() => openCustomImage()}
+            installedApps={
+              <section className="installed-apps">
+                {renderAppFeedback()}
+                {apps.some((app) => app.type === "docker") && (
+                  <>
+                    <h2 className="catalog-heading">Installed</h2>
+                    <div className="catalog-grid">
+                      {apps.filter((app) => app.type === "docker").map((app) => (
+                        <article key={appKey(app)} className="card card-pad catalog-app">
+                          <h3 className="card-title">{app.name} {updateDot(app)}</h3>
+                          <p>{nodes.find((node) => node.id === app.nodeId)?.name ?? app.nodeId} · {pendingApp[appKey(app)] ?? app.state}</p>
+                          <div className="catalog-actions">{renderAppControls(app)}</div>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </section>
+            } />
         )}
 
         {/* ACCESS CONTROLS #/access */}
@@ -2372,6 +2431,28 @@ export function App() {
             </div>
           )}
         </section>
+      )}
+
+      {removeTarget && (
+        <dialog className="modal remove-app-modal" ref={removeDialog} aria-labelledby="remove-app-title"
+          onClose={() => setRemoveTarget(null)}>
+          <div className="card-head">
+            <h2 className="card-title" id="remove-app-title">Remove {removeTarget.name}?</h2>
+          </div>
+          <form className="card-pad" onSubmit={(e) => {
+            e.preventDefault();
+            const deleteData = new FormData(e.currentTarget).has("deleteData");
+            removeDialog.current?.close();
+            void runAppAction(removeTarget, "remove", deleteData);
+          }}>
+            <label><input type="checkbox" name="deleteData" aria-describedby="remove-app-data-help" /> Also delete its data</label>
+            <p id="remove-app-data-help">Deletes saved data in Docker. Keeps folders you linked.</p>
+            <div className="app-controls">
+              <button type="button" className="btn" autoFocus onClick={() => removeDialog.current?.close()}>Cancel</button>
+              <button type="submit" className="btn btn-danger">Remove</button>
+            </div>
+          </form>
+        </dialog>
       )}
 
       {deployOpen && (
@@ -2617,7 +2698,7 @@ export function App() {
                       </label>
                       <label className="assistant-option">
                         <input type="radio" name="assistant-scope" checked={assistantScope === "deploy"} onChange={() => setAssistantScope("deploy")} />
-                        <span><strong>Look and manage apps</strong><small>Also start, stop, restart and install apps.</small></span>
+                        <span><strong>Look and manage apps</strong><small>Also start, stop, restart, install, update and remove apps.</small></span>
                       </label>
                     </div>
                     <p className="assistant-permission-note">It can never open a terminal.</p>

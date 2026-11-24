@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use rackdeck_connect::client::{spawn_connect_client, ConnectClientConfig, ConnectClientHandle};
 use rackdeck_core::{
-    now_unix_secs, AppAction, AuditEvent, AuditRepository, Capability, ConnectRoute, CoreError,
+    now_unix_secs, AppAction, AppActionResult, AuditEvent, AuditRepository, Capability, ConnectRoute, CoreError,
     DeploySpec, DiscoveryPort, FleetRepository, FleetService, ManagedApp, Node, NodeOps, Principal,
     RouteRepository, TelemetrySample, TlsState, TokenRepository, TokenScope,
 };
@@ -260,6 +260,7 @@ fn err_res(err: CoreError) -> Response {
         CoreError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         CoreError::Forbidden(_) => StatusCode::FORBIDDEN,
         CoreError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+        CoreError::AgentUpgradeRequired => StatusCode::CONFLICT,
         CoreError::Storage(_) | CoreError::Runtime(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (code, Json(serde_json::json!({ "error": err.to_string() }))).into_response()
@@ -329,26 +330,67 @@ async fn deploy_node_app(
     };
     match state.fleet_svc.deploy_app(&principal, &node_id, spec).await {
         Ok(app) => {
-            if let Ok(apps) = state.local_node.list_apps().await {
-                *state.latest_apps.write().await = apps.clone();
-                let mut combined = apps;
-                for list in state.remote_apps.read().await.values() {
-                    combined.extend(list.clone());
-                }
-                let _ = state.ws_tx.send(ServerWsEvent::Apps {
-                    node_id: state.local_node_id.clone(),
-                    apps: combined,
-                });
-            }
+            refresh_local_apps(&state).await;
             Json(serde_json::json!({ "app": app })).into_response()
         }
         Err(e) => err_res(e),
     }
 }
 
+async fn refresh_local_apps(state: &ApiState) {
+    if let Ok(mut apps) = state.local_node.list_apps().await {
+        *state.latest_apps.write().await = apps.clone();
+        for list in state.remote_apps.read().await.values() {
+            apps.extend(list.clone());
+        }
+        let _ = state.ws_tx.send(ServerWsEvent::Apps {
+            node_id: state.local_node_id.clone(),
+            apps,
+        });
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppActionOptions {
+    #[serde(default)]
+    delete_data: bool,
+}
+
+fn app_action_message(result: AppActionResult) -> Option<&'static str> {
+    match result {
+        AppActionResult::Done => None,
+        AppActionResult::Updated => Some("App updated."),
+        AppActionResult::AlreadyUpToDate => Some("Already up to date."),
+    }
+}
+
+async fn run_app_change(
+    state: ApiState,
+    principal: Principal,
+    node_id: String,
+    app_id: String,
+    action: AppAction,
+) -> rackdeck_core::CoreResult<AppActionResult> {
+    // Finish the Docker change and its audit entry even if the caller disconnects.
+    tokio::spawn(async move {
+        let result = state.fleet_svc.execute_app_action(&principal, &node_id, &app_id, action).await;
+        if node_id == state.local_node_id
+            && (matches!(&result, Ok(AppActionResult::Updated))
+                || matches!(action, AppAction::Remove { .. }) && result.is_ok())
+        {
+            refresh_local_apps(&state).await;
+        }
+        result
+    })
+    .await
+    .map_err(|_| CoreError::Runtime("The app operation was interrupted.".into()))?
+}
+
 async fn run_app_action(
     State(state): State<ApiState>,
     Path((node_id, app_id, action)): Path<(String, String, String)>,
+    Query(options): Query<AppActionOptions>,
     headers: HeaderMap,
 ) -> Response {
     let principal = match resolve_principal(&headers, &state).await {
@@ -359,14 +401,17 @@ async fn run_app_action(
         "start" => AppAction::Start,
         "stop" => AppAction::Stop,
         "restart" => AppAction::Restart,
-        _ => return err_res(CoreError::InvalidInput("action must be start|stop|restart".into())),
+        "remove" => AppAction::Remove { delete_data: options.delete_data },
+        "update" => AppAction::Update,
+        _ => return err_res(CoreError::InvalidInput("action must be start|stop|restart|remove|update".into())),
     };
-    match state
-        .fleet_svc
-        .execute_app_action(&principal, &node_id, &app_id, parsed)
-        .await
-    {
-        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+    let result = if matches!(parsed, AppAction::Remove { .. } | AppAction::Update) {
+        run_app_change(state, principal, node_id, app_id, parsed).await
+    } else {
+        state.fleet_svc.execute_app_action(&principal, &node_id, &app_id, parsed).await
+    };
+    match result {
+        Ok(result) => Json(serde_json::json!({ "ok": true, "message": app_action_message(result) })).into_response(),
         Err(e) => err_res(e),
     }
 }
@@ -661,6 +706,8 @@ struct AgentCheckinBody {
     apps: Vec<ManagedApp>,
     #[serde(default)]
     results: Vec<AgentCommandResult>,
+    #[serde(default)]
+    app_management: bool,
     // Only inside sealed check-ins:
     #[serde(default)]
     join_token: Option<String>,
@@ -874,7 +921,11 @@ async fn agent_checkin(State(state): State<ApiState>, headers: HeaderMap, raw: a
         apps: all_apps,
     });
 
-    let commands = state.agent_bus.checkin(&body.node.id, body.results).await;
+    let commands = state.agent_bus.checkin(
+        &body.node.id,
+        body.results,
+        body.app_management && reply_key.is_some(),
+    ).await;
 
     let mut res = serde_json::json!({
         "ok": true,
@@ -1578,6 +1629,14 @@ fn mcp_tools() -> serde_json::Value {
           "inputSchema": { "type": "object", "properties": {
               "nodeId": node, "appId": { "type": "string" }, "action": { "type": "string", "enum": ["start", "stop", "restart"] } },
               "required": ["appId", "action"] } },
+        { "name": "remove_app", "description": format!("Remove a Docker app and keep its saved data. {manage}"),
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node, "appId": { "type": "string", "description": "App id from list_apps." } },
+              "required": ["appId"], "additionalProperties": false } },
+        { "name": "update_app", "description": format!("Update a Docker app using its saved Rackdeck install settings. {manage}"),
+          "inputSchema": { "type": "object", "properties": {
+              "nodeId": node, "appId": { "type": "string", "description": "App id from list_apps." } },
+              "required": ["appId"], "additionalProperties": false } },
         { "name": "list_apps", "description": "List the apps on every machine: containers and local model servers (ninfer, Ollama, vLLM, MLX), with ids, ports and state.",
           "inputSchema": { "type": "object", "properties": {} } },
         { "name": "list_catalog_apps", "description": "List the apps Rackdeck can install in one step (Jellyfin, AdGuard Home, Open WebUI and others), with what each does and its port. Prefer these over deploy_app.",
@@ -1750,6 +1809,23 @@ async fn mcp_handler(
                         .await
                         .map(|_| "ok".to_string())
                 }
+                "remove_app" | "update_app" => async {
+                    let node_id = args.get("nodeId").and_then(|v| v.as_str()).unwrap_or(&state.local_node_id);
+                    let app_id = args.get("appId").and_then(|v| v.as_str())
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| CoreError::InvalidInput("Choose an app from list_apps.".into()))?;
+                    let action = if name == "remove_app" {
+                        if args.get("deleteData").is_some_and(|v| v.as_bool() != Some(false)) {
+                            return Err(CoreError::Forbidden("Only the owner can delete app data in the dashboard.".into()));
+                        }
+                        AppAction::Remove { delete_data: false }
+                    } else {
+                        AppAction::Update
+                    };
+                    let node_id = node_id.to_string();
+                    let result = run_app_change(state, principal, node_id, app_id.to_string(), action).await?;
+                    Ok(app_action_message(result).unwrap_or("App removed.").to_string())
+                }.await,
                 "deploy_app" => {
                     let node_id = args
                         .get("nodeId")

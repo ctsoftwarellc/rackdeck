@@ -124,6 +124,15 @@ pub enum AppAction {
     Start,
     Stop,
     Restart,
+    Remove { delete_data: bool },
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppActionResult {
+    Done,
+    Updated,
+    AlreadyUpToDate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +178,11 @@ pub struct ManagedApp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub state: AppState,
+    /// Absent on older agents and on services other than containers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_update: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update_available: bool,
     pub ports: Vec<u16>,
     pub domains: Vec<AppDomain>,
     pub usage: AppUsage,

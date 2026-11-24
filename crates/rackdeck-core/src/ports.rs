@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    Account, AccountKey, AccessTokenRecord, AppAction, AuditEvent, ConnectRoute, ConnectTenant, CoreResult, DeploySpec,
+    Account, AccountKey, AccessTokenRecord, AppAction, AppActionResult, AuditEvent, ConnectRoute, ConnectTenant, CoreResult, DeploySpec,
     DiscoveredPeer, ManagedApp, Node, Secret, TelemetrySample, TokenScope,
 };
 
@@ -10,7 +10,7 @@ pub trait NodeOps: Send + Sync {
     async fn sample(&self) -> CoreResult<TelemetrySample>;
     async fn inspect_node(&self) -> CoreResult<Node>;
     async fn list_apps(&self) -> CoreResult<Vec<ManagedApp>>;
-    async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<()>;
+    async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<AppActionResult>;
     async fn deploy_app(&self, spec: DeploySpec) -> CoreResult<ManagedApp>;
     async fn tail_logs(&self, app_id: &str, lines: usize) -> CoreResult<Vec<String>>;
 }
@@ -91,7 +91,7 @@ pub trait DiscoveryPort: Send + Sync {
 /// Runs app operations on an enrolled remote agent instead of the controller's own machine.
 #[async_trait]
 pub trait RemoteDispatch: Send + Sync {
-    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<()>;
+    async fn app_action(&self, node_id: &str, app_id: &str, action: AppAction) -> CoreResult<AppActionResult>;
     async fn deploy_app(&self, node_id: &str, spec: DeploySpec) -> CoreResult<ManagedApp>;
     async fn tail_logs(&self, node_id: &str, app_id: &str, lines: usize) -> CoreResult<Vec<String>>;
 }

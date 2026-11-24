@@ -10,6 +10,8 @@ pub enum CoreError {
     Forbidden(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("Update Rackdeck on this machine first.")]
+    AgentUpgradeRequired,
     #[error("storage error: {0}")]
     Storage(String),
     #[error("runtime error: {0}")]

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use rackdeck_api::{build_router, seal, update, AgentBus, ApiState, AssetProvider};
-use rackdeck_core::{FleetRepository, FleetService, NodeOps, NodeStatus};
+use rackdeck_core::{AppActionResult, FleetRepository, FleetService, NodeOps, NodeStatus};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
 use rackdeck_protocol::{AgentCommand, AgentCommandResult, AgentOp, AgentOutput, ServerWsEvent};
@@ -482,7 +482,7 @@ async fn run_remote_agent(
         };
         let sample = local.sample().await.ok();
         let apps = local.list_apps().await.unwrap_or_default();
-        let mut payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results });
+        let mut payload = serde_json::json!({ "node": node, "sample": sample, "apps": apps, "results": results, "appManagement": true });
         // Sealed when we know the controller's key: encrypted both ways, and the only way secrets arrive.
         let sealing = saved
             .controller_key
@@ -718,7 +718,11 @@ async fn rediscover(
 
 async fn run_agent_command(local: &LocalNodeAdapter, op: AgentOp) -> Result<AgentOutput, String> {
     match op {
-        AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|_| AgentOutput::Done),
+        AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|result| match result {
+            AppActionResult::Done => AgentOutput::Done,
+            AppActionResult::Updated => AgentOutput::AppUpdated { changed: true },
+            AppActionResult::AlreadyUpToDate => AgentOutput::AppUpdated { changed: false },
+        }),
         AgentOp::Deploy { spec } => local.deploy_app(spec).await.map(|app| AgentOutput::App { app }),
         AgentOp::Logs { app_id, lines } => local.tail_logs(&app_id, lines).await.map(|lines| AgentOutput::Lines { lines }),
         AgentOp::Update => return update::self_update().await.map(|version| AgentOutput::Updated { version }),
@@ -1010,6 +1014,39 @@ mod tests {
         )
         .await;
         assert!(deploy_denied.contains("\"isError\":true") && deploy_denied.to_lowercase().contains("forbidden"), "expected a refused tool call: {deploy_denied}");
+
+        let manage_res = http_post_json(
+            server_addr,
+            "/api/v1/tokens",
+            r#"{"name":"app-manager","client":"Codex","scope":"deploy"}"#,
+            None,
+        ).await;
+        let manage_body: serde_json::Value =
+            serde_json::from_str(manage_res.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let manage_token = manage_body["token"].as_str().unwrap();
+        let remove_path = "/api/v1/nodes/node-home-5090/apps/docker:abc/remove";
+        let delete_path = format!("{remove_path}?deleteData=true");
+        let refused = http_post_json(server_addr, &delete_path, "{}", Some(manage_token)).await;
+        assert!(refused.contains("403") && refused.contains("Only the owner"), "{refused}");
+        for (path, auth) in [(remove_path, Some(manage_token)), (&delete_path, None)] {
+            let old_agent = http_post_json(server_addr, path, "{}", auth).await;
+            assert!(old_agent.contains("409") && old_agent.contains("Update Rackdeck on this machine first."), "{old_agent}");
+        }
+        for tool in ["remove_app", "update_app"] {
+            let call = serde_json::json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": { "name": tool, "arguments": { "nodeId": "node-home-5090", "appId": "docker:abc" } }
+            });
+            let refused = http_post_json(server_addr, "/mcp", &call.to_string(), Some(token)).await;
+            assert!(refused.contains("\"isError\":true") && refused.contains("requires deploy scope"), "{refused}");
+        }
+        let refused = http_post_json(
+            server_addr,
+            "/mcp",
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"remove_app","arguments":{"appId":"docker:abc","deleteData":true}}}"#,
+            None,
+        ).await;
+        assert!(refused.contains("\"isError\":true") && refused.contains("Only the owner"), "{refused}");
 
         // 9. UI asks for logs on the remote node: controller queues the command, the agent
         //    picks it up on check-in and posts the result on the next one.

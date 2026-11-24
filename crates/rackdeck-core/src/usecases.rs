@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    AppAction, AuditEvent, AuditRepository, Capability, CoreResult, DeploySpec, FleetRepository,
+    AppAction, AppActionResult, AuditEvent, AuditRepository, Capability, CoreResult, DeploySpec, FleetRepository,
     ManagedApp, Node, NodeOps, Principal, RemoteDispatch,
 };
 
@@ -43,29 +43,19 @@ impl FleetService {
         node_id: &str,
         app_id: &str,
         action: AppAction,
-    ) -> CoreResult<()> {
-        let action_label = format!("{action:?}").to_lowercase();
-        let target = format!("{node_id}/{app_id}");
-        if let Err(err) = principal.authorize(Capability::ControlApp, Some(node_id)) {
-            let _ = self
-                .audit
-                .append_audit(AuditEvent {
-                    id: format!("aud-{}", now_unix_secs()),
-                    ts: now_unix_secs(),
-                    actor: principal.actor_name().to_string(),
-                    action: action_label,
-                    target,
-                    ok: false,
-                    reason: Some(err.to_string()),
-                })
-                .await;
-            return Err(err);
-        }
-
-        let res = if node_id == self.local_node_id {
-            self.local_node.app_action(app_id, action).await
-        } else {
-            self.remote.app_action(node_id, app_id, action).await
+    ) -> CoreResult<AppActionResult> {
+        let (action_label, capability) = match action {
+            AppAction::Remove { delete_data: true } => ("remove app and data", Capability::DeleteAppData),
+            AppAction::Remove { delete_data: false } => ("remove app", Capability::ControlApp),
+            AppAction::Update => ("update app", Capability::ControlApp),
+            AppAction::Start => ("start", Capability::ControlApp),
+            AppAction::Stop => ("stop", Capability::ControlApp),
+            AppAction::Restart => ("restart", Capability::ControlApp),
+        };
+        let res = match principal.authorize(capability, Some(node_id)) {
+            Err(e) => Err(e),
+            Ok(()) if node_id == self.local_node_id => self.local_node.app_action(app_id, action).await,
+            Ok(()) => self.remote.app_action(node_id, app_id, action).await,
         };
         let _ = self
             .audit
@@ -73,8 +63,8 @@ impl FleetService {
                 id: format!("aud-{}", now_unix_secs()),
                 ts: now_unix_secs(),
                 actor: principal.actor_name().to_string(),
-                action: action_label,
-                target,
+                action: action_label.into(),
+                target: format!("{node_id}/{app_id}"),
                 ok: res.is_ok(),
                 reason: res.as_ref().err().map(|e| e.to_string()),
             })

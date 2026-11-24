@@ -34,6 +34,7 @@ pub enum AgentOp {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentOutput {
     Done,
+    AppUpdated { changed: bool },
     App { app: ManagedApp },
     Lines { lines: Vec<String> },
     /// New version installed, or None when already current.

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { CATALOG, type CatalogApp } from "./catalog";
 import type { ManagedApp, Node } from "./types";
 
@@ -55,11 +55,12 @@ function OpenApp({ node, port }: { node: Node; port: number }) {
 interface CatalogProps {
   nodes: Node[];
   apps: ManagedApp[];
+  installedApps: ReactNode;
   onInstalled: (app: ManagedApp) => void;
   onCustomImage: () => void;
 }
 
-export function AppCatalog({ nodes, apps, onInstalled, onCustomImage }: CatalogProps) {
+export function AppCatalog({ nodes, apps, installedApps, onInstalled, onCustomImage }: CatalogProps) {
   const [selected, setSelected] = useState<CatalogApp | null>(null);
 
   return (
@@ -68,6 +69,7 @@ export function AppCatalog({ nodes, apps, onInstalled, onCustomImage }: CatalogP
         <h1 className="page-title">Apps</h1>
         <button type="button" className="btn" onClick={onCustomImage}>Custom image</button>
       </div>
+      {installedApps}
       <div className="catalog-sections">
         {categories.map((category) => (
           <section key={category}>

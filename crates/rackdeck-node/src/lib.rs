@@ -1,15 +1,19 @@
+use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::process::Stdio;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use rackdeck_core::{
-    now_unix_secs, Accelerator, AppAction, AppState, AppType, AppUsage, CoreError, CoreResult,
+    now_unix_secs, Accelerator, AppAction, AppActionResult, AppState, AppType, AppUsage, CoreError, CoreResult,
     DeploySpec, DockerState, HardwareSpec, ManagedApp, Node, NodeKind, NodeOps, NodeStatus,
     NvidiaGpuInfo, TelemetrySample,
 };
 use sysinfo::{Disks, Networks, System};
 use tokio::process::Command;
+
+mod docker_apps;
+use docker_apps::{container_args, docker, pull_image, remove_container, update_container, UpdateChecks};
 
 pub struct LocalNodeAdapter {
     node_id: String,
@@ -18,6 +22,8 @@ pub struct LocalNodeAdapter {
     sys: Mutex<System>,
     disks: Mutex<Disks>,
     networks: Mutex<Networks>,
+    app_operation: tokio::sync::Mutex<()>,
+    update_checks: UpdateChecks,
 }
 
 impl LocalNodeAdapter {
@@ -53,6 +59,8 @@ impl LocalNodeAdapter {
             sys: Mutex::new(sys),
             disks: Mutex::new(disks),
             networks: Mutex::new(networks),
+            app_operation: Default::default(),
+            update_checks: Default::default(),
         }
     }
 
@@ -423,6 +431,7 @@ impl NodeOps for LocalNodeAdapter {
 
     async fn list_apps(&self) -> CoreResult<Vec<ManagedApp>> {
         let mut apps = Vec::new();
+        let mut update_candidates = HashMap::<String, Vec<String>>::new();
 
         // 1. Docker containers
         if let Some(out) = run_cmd(
@@ -431,29 +440,37 @@ impl NodeOps for LocalNodeAdapter {
                 "ps",
                 "-a",
                 "--format",
-                "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}",
+                "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{json (.Label \"dev.rackdeck.spec\")}}",
             ],
         )
         .await
         {
             for line in out.lines().filter(|l| !l.trim().is_empty()) {
-                let cols: Vec<&str> = line.split('\t').collect();
+                let cols: Vec<&str> = line.splitn(5, '\t').collect();
                 if cols.len() >= 4 {
                     let state = match cols[3] {
                         "running" => AppState::Running,
                         "restarting" => AppState::Starting,
                         _ => AppState::Stopped,
                     };
+                    let spec = cols.get(4)
+                        .and_then(|label| serde_json::from_str::<String>(label).ok())
+                        .and_then(|label| serde_json::from_str::<DeploySpec>(&label).ok());
+                    if let Some(spec) = &spec {
+                        update_candidates.entry(spec.image.clone()).or_default().push(cols[0].into());
+                    }
                     apps.push(ManagedApp {
                         id: format!("docker:{}", cols[0]),
                         node_id: self.node_id.clone(),
                         name: cols[1].to_string(),
                         app_type: AppType::Docker,
                         runner: None,
-                        image: Some(cols[2].to_string()),
+                        image: Some(spec.as_ref().map_or(cols[2], |spec| &spec.image).to_string()),
                         model: None,
                         state,
-                        ports: vec![],
+                        can_update: Some(spec.is_some()),
+                        update_available: false,
+                        ports: spec.and_then(|spec| spec.host_port).into_iter().collect(),
                         domains: vec![],
                         usage: AppUsage {
                             cpu: 0.0,
@@ -464,6 +481,10 @@ impl NodeOps for LocalNodeAdapter {
                     });
                 }
             }
+        }
+        let outdated = self.update_checks.outdated_containers(update_candidates);
+        for app in &mut apps {
+            app.update_available = app.id.strip_prefix("docker:").is_some_and(|id| outdated.contains(id));
         }
 
         // 2. Native local AI runners (ninfer, mlx_lm, vllm, ollama)
@@ -485,6 +506,8 @@ impl NodeOps for LocalNodeAdapter {
                         image: None,
                         model: Some("local model".into()),
                         state: AppState::Running,
+                        can_update: None,
+                        update_available: false,
                         ports: vec![port],
                         domains: vec![],
                         usage: AppUsage {
@@ -510,6 +533,8 @@ impl NodeOps for LocalNodeAdapter {
                 image: Some(format!("rackdeck v{}", env!("CARGO_PKG_VERSION"))),
                 model: None,
                 state: AppState::Running,
+                can_update: None,
+                update_available: false,
                 ports: vec![self.port],
                 domains: vec![],
                 usage: AppUsage {
@@ -524,100 +549,37 @@ impl NodeOps for LocalNodeAdapter {
         Ok(apps)
     }
 
-    async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<()> {
-        if let Some(container_id) = app_id.strip_prefix("docker:") {
-            let subcmd = match action {
-                AppAction::Start => "start",
-                AppAction::Stop => "stop",
-                AppAction::Restart => "restart",
-            };
-            run_cmd("docker", &[subcmd, container_id])
-                .await
-                .ok_or_else(|| CoreError::Runtime(format!("docker {subcmd} {container_id} failed")))?;
-            return Ok(());
-        }
-        Err(CoreError::InvalidInput(format!(
-            "action {action:?} is only supported on docker containers in v0.1 (got {app_id})"
-        )))
+    async fn app_action(&self, app_id: &str, action: AppAction) -> CoreResult<AppActionResult> {
+        let container_id = app_id.strip_prefix("docker:").filter(|id| !id.is_empty())
+            .ok_or_else(|| CoreError::InvalidInput("This action is only available for Docker apps.".into()))?;
+        let _guard = self.app_operation.try_lock().map_err(|_| {
+            CoreError::Runtime("Another app change is in progress on this machine. Try again when it finishes.".into())
+        })?;
+        let subcmd = match action {
+            AppAction::Start => "start",
+            AppAction::Stop => "stop",
+            AppAction::Restart => "restart",
+            AppAction::Remove { delete_data } => return remove_container(container_id, delete_data).await,
+            AppAction::Update => return update_container(container_id).await,
+        };
+        run_cmd("docker", &[subcmd, "--", container_id])
+            .await
+            .ok_or_else(|| CoreError::Runtime(format!("docker {subcmd} {container_id} failed")))?;
+        Ok(AppActionResult::Done)
     }
 
     async fn deploy_app(&self, spec: DeploySpec) -> CoreResult<ManagedApp> {
-        let valid_name = !spec.name.is_empty()
-            && spec.name.len() <= 63
-            && spec
-                .name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if !valid_name {
-            return Err(CoreError::InvalidInput(
-                "app name must be 1-63 alphanumeric, '-', or '_' characters".into(),
-            ));
-        }
-        if spec.image.trim().is_empty() || spec.image.contains(char::is_whitespace) {
-            return Err(CoreError::InvalidInput("invalid docker image".into()));
-        }
+        let mut args = vec!["run".into(), "-d".into()];
+        args.extend(container_args(&spec, &spec.name, "unless-stopped")?);
+        args.extend(["--".into(), spec.image.clone()]);
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
 
-        let mut args: Vec<String> = vec![
-            "run".into(),
-            "-d".into(),
-            "--name".into(),
-            spec.name.clone(),
-            "--restart".into(),
-            "unless-stopped".into(),
-        ];
-        if let (Some(hp), Some(cp)) = (spec.host_port, spec.container_port) {
-            args.push("-p".into());
-            args.push(format!("{hp}:{cp}"));
-        }
-        args.extend(extra_run_args(&spec)?);
-        for (k, v) in &spec.env {
-            if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                args.push("-e".into());
-                args.push(format!("{k}={v}"));
-            }
-        }
-        args.push(spec.image.clone());
-
+        let _guard = self.app_operation.try_lock().map_err(|_| {
+            CoreError::Runtime("Another app change is in progress on this machine. Try again when it finishes.".into())
+        })?;
         preflight(&spec).await?;
-
-        // Pull first with a long timeout: AI images are several GB. `docker run` then starts quickly.
-        let pull = tokio::time::timeout(
-            std::time::Duration::from_secs(900),
-            Command::new("docker").args(["pull", &spec.image]).stdout(Stdio::null()).stderr(Stdio::piped()).output(),
-        )
-        .await
-        .map_err(|_| CoreError::Runtime("downloading the image took over 15 minutes".into()))?
-        .map_err(|e| CoreError::Runtime(format!("docker unavailable: {e}")))?;
-        if !pull.status.success() {
-            return Err(CoreError::Runtime(String::from_utf8_lossy(&pull.stderr).trim().to_string()));
-        }
-
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            Command::new("docker")
-                .args(&args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
-        )
-        .await
-        .map_err(|_| CoreError::Runtime("docker run timed out".into()))?
-        .map_err(|e| CoreError::Runtime(format!("docker unavailable: {e}")))?;
-
-        if !output.status.success() {
-            let err_msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(CoreError::Runtime(if err_msg.is_empty() {
-                "docker run failed".into()
-            } else {
-                err_msg
-            }));
-        }
-
-        let id_short: String = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .chars()
-            .take(12)
-            .collect();
+        pull_image(&spec.image).await?;
+        let id_short: String = docker(&args, 60).await?.chars().take(12).collect();
 
         Ok(ManagedApp {
             id: format!("docker:{id_short}"),
@@ -628,6 +590,8 @@ impl NodeOps for LocalNodeAdapter {
             image: Some(spec.image),
             model: None,
             state: AppState::Running,
+            can_update: Some(true),
+            update_available: false,
             ports: spec.host_port.into_iter().collect(),
             domains: vec![],
             usage: AppUsage {

@@ -613,6 +613,15 @@ a:hover { text-decoration: underline; }
 .catalog-installed { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .catalog-installed + .catalog-installed { margin-top: 8px; }
 .catalog-installed span { font-size: 13px; color: var(--text-2); flex: 1; }
+.installed-apps:empty { display: none; }
+.installed-apps { margin-bottom: 24px; }
+.app-controls { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.tbl .app-controls { justify-content: flex-end; }
+.app-feedback { margin: 8px 14px; color: var(--text-2); font-size: 13px; }
+.remove-app-modal { width: calc(100% - 32px); padding: 0; color: var(--text); }
+.remove-app-modal::backdrop { background: rgb(0 0 0 / 0.42); }
+.remove-app-modal p { color: var(--text-2); font-size: 13px; margin: 6px 0 16px; }
+.remove-app-modal form > .app-controls { display: flex; justify-content: flex-end; }
 .catalog-install .input, #custom-image-computer { width: 100%; }
 .catalog-install .inline-err { color: var(--crit); }
 .catalog-install > .btn { align-self: flex-start; }

@@ -160,6 +160,8 @@ function buildInitialState() {
       name: "postgres-dev",
       type: "docker",
       image: "postgres:17-alpine",
+      canUpdate: true,
+      updateAvailable: true,
       state: "running",
       ports: [5432],
       domains: [],
@@ -194,6 +196,7 @@ function buildInitialState() {
       name: "chat-ui",
       type: "docker",
       image: "ghcr.io/open-webui/open-webui:main",
+      canUpdate: true,
       state: "running",
       ports: [3000],
       domains: [],
@@ -205,6 +208,7 @@ function buildInitialState() {
       name: "comfyui",
       type: "docker",
       image: "yanwk/comfyui-boot:cu124",
+      canUpdate: true,
       state: "stopped",
       ports: [8188],
       domains: [],
@@ -227,6 +231,7 @@ function buildInitialState() {
       name: "pihole",
       type: "docker",
       image: "pihole/pihole:latest",
+      canUpdate: false,
       state: "running",
       ports: [53, 8080],
       domains: [],
@@ -238,6 +243,7 @@ function buildInitialState() {
       name: "uptime-kuma",
       type: "docker",
       image: "louislam/uptime-kuma:1",
+      canUpdate: true,
       state: "running",
       ports: [3001],
       domains: [],
@@ -260,6 +266,7 @@ function buildInitialState() {
       name: "caddy",
       type: "docker",
       image: "caddy:2-alpine",
+      canUpdate: true,
       state: "stopped",
       ports: [80, 443],
       domains: [],
@@ -271,6 +278,7 @@ function buildInitialState() {
       name: "plausible",
       type: "docker",
       image: "ghcr.io/plausible/community-edition:v2",
+      canUpdate: true,
       state: "stopped",
       ports: [8000],
       domains: [],
@@ -1038,12 +1046,11 @@ export function installDemo(): void {
       return jsonResponse({ events: state.audit });
     }
 
-    // App Actions: start / stop / restart
-    const appActionMatch = path.match(/^\/api\/v1\/nodes\/([^/]+)\/apps\/([^/]+)\/(start|stop|restart)$/);
+    const appActionMatch = path.match(/^\/api\/v1\/nodes\/([^/]+)\/apps\/([^/]+)\/(start|stop|restart|remove|update)$/);
     if (appActionMatch && method === "POST") {
       const nodeId = decodeURIComponent(appActionMatch[1]);
       const appId = decodeURIComponent(appActionMatch[2]);
-      const action = appActionMatch[3] as "start" | "stop" | "restart";
+      const action = appActionMatch[3];
       const node = state.nodes.find((n) => n.id === nodeId);
       const app = state.apps.find((a) => a.id === appId && a.nodeId === nodeId);
 
@@ -1053,6 +1060,29 @@ export function installDemo(): void {
       if (node.status !== "online") {
         recordAudit("owner", `app.${action}`, `${node.name}/${app.name}`, false, "machine offline");
         return jsonResponse({ error: `${node.name} is offline.` }, 409);
+      }
+
+      if (action === "remove" || action === "update") {
+        if (app.type !== "docker") return jsonResponse({ error: "This action is only available for Docker apps." }, 400);
+        if (action === "update" && !app.canUpdate) {
+          return jsonResponse({ error: "This app has no saved Rackdeck install settings." }, 400);
+        }
+        await delay(action === "update" ? 1200 : 420);
+        if (action === "remove") {
+          state.apps = state.apps.filter((item) => item !== app);
+          const deleteData = url.searchParams.get("deleteData") === "true";
+          recordAudit("owner", deleteData ? "remove app and data" : "remove app", `${node.name}/${app.name}`);
+          broadcast({ t: "apps", apps: [...state.apps] });
+          return jsonResponse({ ok: true });
+        }
+        const changed = app.updateAvailable;
+        if (changed) {
+          app.updateAvailable = false;
+          app.state = "running";
+          broadcast({ t: "apps", apps: [...state.apps] });
+        }
+        recordAudit("owner", "update app", `${node.name}/${app.name}`);
+        return jsonResponse({ ok: true, message: changed ? "App updated." : "Already up to date." });
       }
 
       await delay(420);
@@ -1111,6 +1141,7 @@ export function installDemo(): void {
         name,
         type: "docker",
         image,
+        canUpdate: true,
         state: "running",
         ports: [...ports],
         domains: [],
@@ -1165,6 +1196,12 @@ export function installDemo(): void {
     if (path === "/mcp" || path.startsWith("/mcp/")) {
       const body = readJson();
       const id = body.id ?? 1;
+      const inputSchema = {
+        type: "object",
+        properties: { nodeId: { type: "string" }, appId: { type: "string" } },
+        required: ["appId"],
+        additionalProperties: false,
+      };
       if (body.method === "tools/list") {
         return jsonResponse({
           jsonrpc: "2.0",
@@ -1174,10 +1211,26 @@ export function installDemo(): void {
               { name: "node_health", description: "List machines with live status and resource usage." },
               { name: "container_logs_tail", description: "Read recent logs for a service." },
               { name: "app_action", description: "Start, stop, or restart a container." },
+              { name: "remove_app", description: "Remove a Docker app and keep its saved data.", inputSchema },
+              { name: "update_app", description: "Update a Docker app.", inputSchema },
               { name: "deploy_app", description: "Deploy a Docker container." },
             ],
           },
         });
+      }
+      const params = body.params as { name?: string; arguments?: Record<string, unknown> } | undefined;
+      if (body.method === "tools/call" && (params?.name === "remove_app" || params?.name === "update_app")) {
+        const args = params.arguments ?? {};
+        const node = typeof args.nodeId === "string" ? args.nodeId : CONTROLLER_ID;
+        const action = params.name === "remove_app" ? "remove" : "update";
+        const result = (text: string, isError = false) =>
+          jsonResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], isError } });
+        if (typeof args.appId !== "string" || !args.appId) return result("Choose an app from list_apps.", true);
+        if (action === "remove" && args.deleteData) return result("Only the owner can delete app data in the dashboard.", true);
+        const endpoint = `/api/v1/nodes/${encodeURIComponent(node)}/apps/${encodeURIComponent(args.appId)}/${action}`;
+        const res = await handleDemoFetch(new URL(endpoint, url.origin), { method: "POST" });
+        const data = await res.json();
+        return result(res.ok ? data.message ?? "App removed." : data.error, !res.ok);
       }
       return jsonResponse({
         jsonrpc: "2.0",

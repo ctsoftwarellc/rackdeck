@@ -845,6 +845,8 @@ version = "0.2.3"
 dependencies = [
  "async-trait",
  "rackdeck-core",
+ "serde",
+ "serde_json",
  "sysinfo",
  "tokio",
 ]

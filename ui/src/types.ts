@@ -48,6 +48,8 @@ export interface ManagedApp {
   image?: string;
   model?: string;
   state: "running" | "stopped" | "starting" | "stopping" | "error";
+  canUpdate?: boolean;
+  updateAvailable?: boolean;
   ports: number[];
   domains: { host: string; tls: string }[];
   usage: { cpu: number; memMb: number; vramMb?: number; tps?: number };

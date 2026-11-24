@@ -10,14 +10,11 @@ Rackdeck is a single file of about 6 MB with the web dashboard built in. It used
 
 ```bash
 curl -fsSL https://get.rackdeck.dev | sh
-RACKDECK_PASSWORD='choose-a-strong-password' rackdeck
 ```
 
-Open http://localhost:7420 and log in with that password.
+When the command asks whether to make this computer your dashboard, press Enter. Open the address it prints and sign in with the password it shows. You can find the password again in `~/.config/rackdeck/password`.
 
-Without `RACKDECK_PASSWORD`, Rackdeck only listens on this machine, so nothing else on your network can reach it. Set a password to open it from your phone or another computer, or to add machines.
-
-To run the dashboard as a background service that starts at boot:
+To set up the dashboard service without prompts, add `--service` as shown below. You can leave out `RACKDECK_PASSWORD` to have the installer make a password for you.
 
 ```bash
 curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='choose-a-strong-password' sh -s -- --service
@@ -25,12 +22,19 @@ curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='choose-a-strong-passwor
 
 ## Add a machine
 
-1. In the dashboard, click **+ Add machine** and copy the command.
-2. Run it on the other machine.
+On the other computer on your home network, open a terminal and run this command.
 
-The machine shows up within a few seconds. The command works once and expires after 15 minutes. The installer tries each of the dashboard's addresses (Tailscale and your home network) and uses the one that answers, sets the agent up as a service, and tells you plainly if something is wrong, such as an expired command.
+```bash
+curl -fsSL https://get.rackdeck.dev | sh
+```
 
-Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and authenticated both ways. Older agents switch over on their first check-in after updating ([details](docs/security.md#check-ins-between-agents-and-the-dashboard)). On Windows, use WSL with systemd turned on; the installer explains how if it's off.
+When it finds your dashboard, press Enter to ask to join. On the dashboard’s **Machines** page, check that the request shows the same six-digit code printed in the terminal, then click **Allow**.
+
+For a computer on a different network, click **+ Add machine**, open **Different network**, and copy the one-time command. Run it on that computer. It expires after 15 minutes. The computer needs to be able to reach your dashboard, for example over Tailscale.
+
+If a computer shows as offline, run `rackdeck doctor` on that computer. It checks the Rackdeck agent and the connection to the dashboard.
+
+Joined computers connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and authenticated both ways. Older agents switch over on their first check-in after updating ([details](docs/security.md#check-ins-between-agents-and-the-dashboard)). On Windows, use WSL with systemd turned on. The installer explains how to turn it on.
 
 ## What you can do
 
@@ -61,7 +65,7 @@ Install Rackdeck (https://github.com/ctsoftwarellc/rackdeck) on this machine as 
 1. Generate a strong password, or ask me for one.
 2. Run: curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='<password>' sh -s -- --service
 3. Check it's healthy: curl -sf http://127.0.0.1:7420/api/v1/health
-4. Tell me the URL to open, the password, and how to add my next machine (+ Add machine in the dashboard).
+4. Tell me the URL to open, the password, and how to add my next computer on the home network.
 Don't open router ports or expose port 7420 to the internet.
 ```
 

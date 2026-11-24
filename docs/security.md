@@ -38,6 +38,14 @@ This page explains how Rackdeck's parts connect, what each connection protects, 
 
 The dashboard refuses a join that claims to be the dashboard's own machine.
 
+## Joining on your home network
+
+The installer looks for dashboards by sending a UDP broadcast on port 7420 by default. A dashboard answers only if it has a password set and the request comes from a private or link-local IPv4 address. It replies with its name, port, and public key.
+
+The computer asking to join and the dashboard each make a six-digit code from both public keys. If someone in the middle swaps a key, the codes should differ. Check the code on the computer against the one in the dashboard before clicking **Allow**. The computer can only join once the owner clicks **Allow**.
+
+The dashboard keeps at most 20 pending requests. A request expires after 15 minutes without a check-in. An agent looking for its dashboard at a new address only accepts a reply with the key it pinned for that dashboard.
+
 ## Check-ins between agents and the dashboard
 
 Check-ins travel over plain HTTP on your LAN or tailnet, so Rackdeck encrypts and authenticates them itself:
@@ -81,6 +89,7 @@ Check-ins travel over plain HTTP on your LAN or tailnet, so Rackdeck encrypts an
 The open-source binaries send no analytics, crash reports or usage pings. The outbound connections they make:
 
 - Agents check in to your dashboard.
+- The installer broadcasts on your local network to find a dashboard. Agents can also broadcast if they lose the dashboard, and `rackdeck doctor` can broadcast if the saved address is unreachable.
 - When you open the dashboard, your browser asks GitHub for the latest version number. The dashboard and agents download a release only when you click Update or run `rackdeck update`.
 - The dashboard connects to a relay only if you turn Connect on.
 
@@ -88,6 +97,7 @@ The open-source binaries send no analytics, crash reports or usage pings. The ou
 
 - Updates aren't checked against checksums or signatures yet.
 - The first contact for an older agent pins the dashboard key without proof (see [Older agents](#check-ins-between-agents-and-the-dashboard)).
+- When joining on your home network, the installer trusts the dashboard you choose by name. You could choose a fake dashboard on the same network by mistake. On the dashboard, comparing the code with the one on the computer you're adding helps protect against allowing a fake computer.
 - The dashboard serves plain HTTP. Use it on your LAN or tailnet, or put HTTPS in front of it before exposing it any other way.
 - Anyone who can run commands as you on a machine can read that machine's secrets file.
 

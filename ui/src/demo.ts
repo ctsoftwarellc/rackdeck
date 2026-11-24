@@ -3,6 +3,7 @@ import type {
   AuditEvent,
   ConnectRoute,
   DiscoveredPeer,
+  JoinRequest,
   ManagedApp,
   Node,
   PairingInvitation,
@@ -66,7 +67,7 @@ function buildInitialState() {
       },
       docker: "running",
       version: LATEST_VERSION,
-      lanIp: "192.168.1.42",
+      lanIp: "192.168.1.89",
       tailscaleIp: "100.84.12.14",
       connectSlug: "macbook-pro",
       connectEnabled: false,
@@ -190,7 +191,7 @@ function buildInitialState() {
     {
       id: "gpu-open-webui",
       nodeId: "gpu-rig",
-      name: "open-webui",
+      name: "chat-ui",
       type: "docker",
       image: "ghcr.io/open-webui/open-webui:main",
       state: "running",
@@ -291,7 +292,7 @@ function buildInitialState() {
   const tokens: AccessTokenRecord[] = [
     {
       id: "tok_claude_read",
-      name: "claude-code-macbook",
+      name: "Claude Code · Nov 10",
       client: "Claude Code",
       scope: "read",
       nodeIds: [],
@@ -302,7 +303,7 @@ function buildInitialState() {
     },
     {
       id: "tok_codex_deploy",
-      name: "codex-workstation",
+      name: "Codex · Nov 19",
       client: "Codex",
       scope: "deploy",
       nodeIds: [],
@@ -345,7 +346,7 @@ function buildInitialState() {
       ts: now - 42 * 60,
       actor: "mcp:codex-workstation",
       action: "app.restart",
-      target: "gpu-rig/open-webui",
+      target: "gpu-rig/chat-ui",
       ok: true,
     },
     {
@@ -410,7 +411,7 @@ function buildInitialState() {
       id: "rt_webui",
       host: "chat.rackdev.app",
       nodeId: "gpu-rig",
-      targetApp: "open-webui",
+      targetApp: "chat-ui",
       targetPort: 3000,
       tls: "auto",
       requireAuth: true,
@@ -439,6 +440,7 @@ function appSampleLogs(app: ManagedApp): string[] {
         "POST /api/chat 200 2.31s (76.9 tok/s)",
         "GPU thermal check: 66C, fan 41%, memory clocks nominal",
       ];
+    case "chat-ui":
     case "open-webui":
       return [
         "INFO:     Started server process [1]",
@@ -451,14 +453,14 @@ function appSampleLogs(app: ManagedApp): string[] {
       return [
         "dnsmasq[42]: started, version 2.90 cachesize 10000",
         "FTL: 18,412 queries over last 24h (14.2% blocked)",
-        "query[A] api.github.com from 192.168.1.42 -> forwarded to 1.1.1.1",
+        "query[A] api.github.com from 192.168.1.89 -> forwarded to 1.1.1.1",
         "query[A] telemetry.example.invalid from 192.168.1.88 -> gravity blocked",
         "FTL: database checkpoint complete (4ms)",
       ];
     case "uptime-kuma":
       return [
         "Monitor [macbook-pro :7420] UP (3ms)",
-        "Monitor [gpu-rig open-webui :3000] UP (9ms)",
+        "Monitor [gpu-rig chat-ui :3000] UP (9ms)",
         "Monitor [nas-closet pihole :8080] UP (2ms)",
         "Monitor [vps-fra1 caddy :443] DOWN (connect ETIMEDOUT)",
         "Heartbeat cycle complete (3/4 healthy)",
@@ -498,6 +500,15 @@ export function installDemo(): void {
   document.title = "Rackdeck Live Demo";
 
   const state = buildInitialState();
+  let joinRequest: JoinRequest | null = {
+    key: "demo-mini-pc",
+    nodeId: "mini-pc",
+    name: "mini-pc",
+    os: "Ubuntu 24.04",
+    ip: "192.168.1.42",
+    code: "043 604",
+    at: nowSec(),
+  };
 
   // Baseline telemetry state per node for smooth random walks
   const telState: Record<string, TelemetrySample> = {
@@ -839,6 +850,38 @@ export function installDemo(): void {
       });
     }
 
+    if (path === "/api/v1/join-requests" && method === "GET") {
+      return jsonResponse({ requests: joinRequest ? [joinRequest] : [] });
+    }
+    if (path === "/api/v1/join-requests/demo-mini-pc") {
+      if (method === "POST") {
+        if (!joinRequest) return jsonResponse({ error: "That request expired." }, 404);
+        const node: Node = {
+          id: joinRequest.nodeId,
+          name: joinRequest.name,
+          os: joinRequest.os,
+          lanIp: joinRequest.ip ?? undefined,
+          kind: "other",
+          status: "online",
+          lastSeen: nowSec(),
+          uptimeSecs: 0,
+          hw: { cpuCores: 4, ramTotalMb: 8192, diskTotalGb: 256, accel: { kind: "none" } },
+          docker: "absent",
+          version: LATEST_VERSION,
+          connectEnabled: false,
+        };
+        joinRequest = null;
+        state.nodes.push(node);
+        broadcast({ t: "node", node });
+        recordAudit("you (web)", "allow machine", node.id);
+        return jsonResponse({ ok: true });
+      }
+      if (method === "DELETE") {
+        joinRequest = null;
+        return jsonResponse({ ok: true });
+      }
+    }
+
     // Tailnet Discovery
     if (path === "/api/v1/discovery/scan" && method === "POST") {
       await delay(280);
@@ -976,15 +1019,8 @@ export function installDemo(): void {
       };
       const token = `rd_demo_${randHex(24)}`;
       state.tokens = [record, ...state.tokens];
-      const mcpUrl = `${location.origin}/mcp`;
-      const snippet =
-        client === "Codex"
-          ? `codex mcp add rackdeck --url ${mcpUrl} --bearer-token-env-var RACKDECK_TOKEN`
-          : client === "Cursor"
-          ? `Paste the JSON tab into .cursor/mcp.json (token: ${token})`
-          : `claude mcp add --transport http rackdeck ${mcpUrl} --header "Authorization: Bearer ${token}"`;
-      recordAudit("owner", "token.create", `${name} (${scope})`);
-      return jsonResponse({ record, token, snippet });
+      recordAudit("owner", "create token", name);
+      return jsonResponse({ record, token });
     }
     const tokenDelMatch = path.match(/^\/api\/v1\/tokens\/([^/]+)$/);
     if (tokenDelMatch && method === "DELETE") {
@@ -994,7 +1030,7 @@ export function installDemo(): void {
         tok.revoked = true;
         recordAudit("owner", "token.revoke", tok.name);
       }
-      return jsonResponse({ ok: true });
+      return jsonResponse({ revoked: Boolean(tok) });
     }
 
     // Audit Log
@@ -1053,8 +1089,22 @@ export function installDemo(): void {
       if (!name || !image) {
         return jsonResponse({ error: "App name and image are required." }, 400);
       }
-      await delay(500);
+      await delay(700);
+      if (state.apps.some((app) => app.nodeId === node.id && app.name === name && app.type === "docker")) {
+        return jsonResponse({ error: "An app with that name is already on " + node.name + "." }, 409);
+      }
+      if (body.gpu && node.hw.accel.kind !== "nvidia") {
+        return jsonResponse({ error: node.name + " has no NVIDIA GPU." }, 400);
+      }
       const hostPort = Number(body.hostPort);
+      const ports = new Set<number>();
+      if (Number.isInteger(hostPort) && hostPort > 0) ports.add(hostPort);
+      if (Array.isArray(body.ports)) {
+        for (const mapping of body.ports) {
+          const port = Number(String(mapping).split(":")[0]);
+          if (Number.isInteger(port) && port > 0) ports.add(port);
+        }
+      }
       const newApp: ManagedApp = {
         id: `${node.id}-${name}-${randHex(3)}`,
         nodeId: node.id,
@@ -1062,14 +1112,14 @@ export function installDemo(): void {
         type: "docker",
         image,
         state: "running",
-        ports: Number.isFinite(hostPort) && hostPort > 0 ? [hostPort] : [],
+        ports: [...ports],
         domains: [],
         usage: { cpu: 1.9, memMb: 184 },
       };
       state.apps = [...state.apps, newApp];
       broadcast({ t: "apps", apps: [...state.apps] });
       recordAudit("owner", "app.deploy", `${node.name}/${name}`);
-      return jsonResponse({ ok: true, app: newApp });
+      return jsonResponse({ app: newApp });
     }
 
     // Node Update

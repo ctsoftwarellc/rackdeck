@@ -1,6 +1,16 @@
 export type NodeKind = "vps" | "gpu" | "mac" | "other";
 export type NodeStatus = "online" | "degraded" | "offline";
 
+export interface JoinRequest {
+  key: string;
+  nodeId: string;
+  name: string;
+  os: string;
+  ip: string | null;
+  code: string;
+  at: number;
+}
+
 export type Accelerator =
   | { kind: "none" }
   | {

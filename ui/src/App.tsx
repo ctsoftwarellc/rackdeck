@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
+import { AppCatalog, dockerUnavailable } from "./AppCatalog";
+import { ASSISTANTS, assistantSetup, type Assistant, type AssistantSetup } from "./assistantSetup";
 import type {
   AccessTokenRecord,
   AuditEvent,
   ConnectRoute,
   DiscoveredPeer,
+  JoinRequest,
   ManagedApp,
   Node,
   PairingInvitation,
@@ -14,6 +17,7 @@ import type {
 type ParsedRoute =
   | { page: "machines" }
   | { page: "machine"; id: string }
+  | { page: "apps" }
   | { page: "network" }
   | { page: "access" }
   | { page: "audit" };
@@ -22,6 +26,7 @@ function parseHash(raw: string): ParsedRoute {
   const clean = raw.replace(/^#/, "") || "/";
   const m = clean.match(/^\/machines\/([^/?#]+)/);
   if (m) return { page: "machine", id: decodeURIComponent(m[1]) };
+  if (clean.startsWith("/apps")) return { page: "apps" };
   if (clean.startsWith("/network")) return { page: "network" };
   if (clean.startsWith("/access")) return { page: "access" };
   if (clean.startsWith("/audit")) return { page: "audit" };
@@ -102,15 +107,25 @@ function copyTextToClipboard(value: string): Promise<boolean> {
 
 function Help({ title, children }: { title: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  function close() {
+    setOpen(false);
+    trigger.current?.focus();
+  }
   return (
     <>
-      <button type="button" className="help-btn" aria-label={`About ${title}`} onClick={() => setOpen(true)}>?</button>
+      <button ref={trigger} type="button" className="help-btn" aria-label={`About ${title}`} onClick={() => setOpen(true)}>?</button>
       {open && (
-        <div className="backdrop" onClick={() => setOpen(false)}>
-          <div className="modal" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <div className="backdrop" onClick={close}>
+          <div className="modal" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              close();
+            }
+          }}>
             <div className="card-head">
               <h2 className="card-title">{title}</h2>
-              <button type="button" className="btn btn-sm" onClick={() => setOpen(false)}>✕</button>
+              <button type="button" className="btn btn-sm" aria-label="Close help" autoFocus onClick={close}>✕</button>
             </div>
             <div className="card-pad help-body">{children}</div>
           </div>
@@ -315,6 +330,15 @@ function Copy({ value, display, className }: { value: string; display?: string; 
   );
 }
 
+function CommandSnippet({ command }: { command: string }) {
+  return (
+    <div className="snippet-box command-snippet">
+      <pre>{command}</pre>
+      <Copy value={command} display="Copy" />
+    </div>
+  );
+}
+
 function Sparkline({
   values,
   secondary,
@@ -372,24 +396,6 @@ function QrSvg({ uri }: { uri: string }) {
   return <div className="qr-box" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-/** Mirrors the tools/list response in rackdeck-api's /mcp handler. */
-const MCP_TOOLS = [
-  { name: "node_health", does: "List your machines with live CPU, memory, GPU, and status.", scope: "read" },
-  { name: "container_logs_tail", does: "Read the recent logs of an app or container.", scope: "read" },
-  { name: "app_action", does: "Start, stop, or restart a container.", scope: "deploy" },
-  { name: "deploy_app", does: "Run a new Docker container with ports and env vars.", scope: "deploy" },
-];
-
-const DEPLOY_PRESETS = [
-  { label: "Open WebUI", name: "open-webui", image: "ghcr.io/open-webui/open-webui:main", hp: "3000", cp: "8080", env: "", about: "ChatGPT-style web UI for your local models. Opens on port 3000." },
-  { label: "Uptime Kuma", name: "uptime-kuma", image: "louislam/uptime-kuma:1", hp: "3001", cp: "3001", env: "", about: "Uptime monitor with a status page. Opens on port 3001." },
-  { label: "Nginx", name: "nginx", image: "nginx:alpine", hp: "8088", cp: "80", env: "", about: "Plain web server. Handy for testing a port. Opens on port 8088." },
-  { label: "Redis", name: "redis", image: "redis:7-alpine", hp: "6379", cp: "6379", env: "", about: "In-memory key/value store on port 6379." },
-  { label: "Postgres", name: "postgres", image: "postgres:17", hp: "5432", cp: "5432", env: "POSTGRES_PASSWORD=changeme", about: "Postgres database on port 5432. Change the password before exposing it." },
-  { label: "Custom image", name: "", image: "", hp: "", cp: "", env: "", about: "" },
-];
-
-/** Mirrors the args rackdeck-node builds for `docker run`, so the preview matches what actually runs. */
 /** "0.2.0" < "0.2.1"; non-numeric parts count as 0. */
 function isOlderVersion(a: string, b: string): boolean {
   const pa = a.split(".").map((x) => parseInt(x, 10) || 0);
@@ -412,6 +418,8 @@ function dockerRunPreview(name: string, image: string, hostPort: string, contPor
 }
 
 const IS_DEMO = import.meta.env.MODE === "demo";
+const INSTALL_COMMAND = "curl -fsSL https://get.rackdeck.dev | sh";
+const JOIN_REQUESTS_URL = "/api/v1/join-requests";
 
 export function App() {
   const route = useHash();
@@ -463,6 +471,7 @@ export function App() {
 
   // Deploy app drawer
   const [deployOpen, setDeployOpen] = useState(false);
+  const [deployNodeId, setDeployNodeId] = useState("");
   const [depName, setDepName] = useState("");
   const [depImage, setDepImage] = useState("");
   const [depHostPort, setDepHostPort] = useState("");
@@ -498,16 +507,30 @@ export function App() {
   const [tokens, setTokens] = useState<AccessTokenRecord[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [newAuditIds, setNewAuditIds] = useState<Set<string>>(new Set());
-  const [tokenDrawerOpen, setTokenDrawerOpen] = useState(false);
-  const [tokName, setTokName] = useState("");
-  const [tokClient, setTokClient] = useState("Claude Code");
-  const [tokScope, setTokScope] = useState<"read" | "deploy">("read");
-  const [createdToken, setCreatedToken] = useState<{ token: string; snippet: string; jsonSnippet: string } | null>(null);
-  const [snippetTab, setSnippetTab] = useState<"cli" | "json">("cli");
+  const [assistantDrawerOpen, setAssistantDrawerOpen] = useState(false);
+  const [assistantClient, setAssistantClient] = useState<Assistant>("Claude Code");
+  const [assistantScope, setAssistantScope] = useState<"read" | "deploy">("read");
+  const [assistantResult, setAssistantResult] = useState<AssistantSetup | null>(null);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantError, setAssistantError] = useState("");
+  const [disconnecting, setDisconnecting] = useState("");
+  const [assistantsError, setAssistantsError] = useState("");
 
-  // Pairing modal + Linux/Mac join command
-  const [pairInvite, setPairInvite] = useState<PairingInvitation | null>(null);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
+  const [joinRefresh, setJoinRefresh] = useState(0);
+  const [joinLoadError, setJoinLoadError] = useState(false);
+  const [joinActionError, setJoinActionError] = useState("");
+  const [joinPending, setJoinPending] = useState(false);
+
+  // Add machine dialog
+  const [addMachineOpen, setAddMachineOpen] = useState(false);
+  const [differentNetworkOpen, setDifferentNetworkOpen] = useState(false);
   const [joinCmd, setJoinCmd] = useState<string>("");
+  const [joinCmdError, setJoinCmdError] = useState(false);
+  const [joinCmdAttempt, setJoinCmdAttempt] = useState(0);
+  const [pairOpen, setPairOpen] = useState(false);
+  const [pairInvite, setPairInvite] = useState<PairingInvitation | null>(null);
+  const [pairError, setPairError] = useState(false);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
 
   // ⌘K palette
@@ -627,6 +650,34 @@ export function App() {
   }, [authState.checked, authState.authed]);
 
   useEffect(() => {
+    if (!authState.checked || !authState.authed) return;
+    const controller = new AbortController();
+    let loading = false;
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        const res = await fetch(JOIN_REQUESTS_URL, { signal: controller.signal });
+        if (!res.ok) throw new Error();
+        const data: { requests: JoinRequest[] } = await res.json();
+        if (controller.signal.aborted) return;
+        setJoinRequests(data.requests);
+        setJoinLoadError(false);
+      } catch {
+        if (!controller.signal.aborted) setJoinLoadError(true);
+      } finally {
+        loading = false;
+      }
+    }
+    void refresh();
+    const id = window.setInterval(refresh, 3000);
+    return () => {
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [authState.checked, authState.authed, joinRefresh]);
+
+  useEffect(() => {
     fetch("https://api.github.com/repos/ctsoftwarellc/rackdeck/releases/latest")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d?.tag_name && setLatestVersion(String(d.tag_name).replace(/^v/, "")))
@@ -649,13 +700,30 @@ export function App() {
     return () => window.clearInterval(id);
   }, []);
 
-  // Live countdown ticker when Pairing modal is open
   useEffect(() => {
-    if (!pairInvite) return;
+    if (!addMachineOpen || !differentNetworkOpen) return;
+    const request = new AbortController();
+    setJoinCmd("");
+    setJoinCmdError(false);
+    fetch("/api/v1/join-token", { method: "POST", signal: request.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (!request.signal.aborted) setJoinCmd(data.command);
+      })
+      .catch(() => {
+        if (!request.signal.aborted) setJoinCmdError(true);
+      });
+    return () => request.abort();
+  }, [addMachineOpen, differentNetworkOpen, joinCmdAttempt]);
+
+  // Live countdown while the QR code is visible
+  useEffect(() => {
+    if (!pairOpen || !pairInvite) return;
     setNowSec(Math.floor(Date.now() / 1000));
     const id = window.setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 250);
     return () => window.clearInterval(id);
-  }, [pairInvite]);
+  }, [pairOpen, pairInvite]);
 
   // Auto-scroll logs when Follow is on
   useEffect(() => {
@@ -673,10 +741,16 @@ export function App() {
         .catch(() => {});
       runScan();
     } else if (route.page === "access" || route.page === "audit") {
-      fetch("/api/v1/tokens")
-        .then((r) => r.json())
-        .then((d) => setTokens(d.tokens ?? []))
-        .catch(() => {});
+      if (route.page === "access") {
+        setAssistantsError("");
+        fetch("/api/v1/tokens")
+          .then((res) => {
+            if (!res.ok) throw new Error();
+            return res.json();
+          })
+          .then((data) => setTokens(data.tokens ?? []))
+          .catch(() => setAssistantsError("Could not load connected assistants."));
+      }
       fetch("/api/v1/audit")
         .then((r) => r.json())
         .then((d) => setAudit(d.events ?? []))
@@ -693,8 +767,8 @@ export function App() {
         setCmdSel(0);
       } else if (e.key === "Escape") {
         setCmdOpen(false);
-        setPairInvite(null);
-        setTokenDrawerOpen(false);
+        setAddMachineOpen(false);
+        setPairOpen(false);
         setDeployOpen(false);
         closeDrawer();
       }
@@ -714,14 +788,43 @@ export function App() {
     }
   }
 
-  async function openPairModal() {
-    const [pairRes, joinRes] = await Promise.all([
-      fetch("/api/v1/pair", { method: "POST" }),
-      fetch("/api/v1/join-token", { method: "POST" }),
-    ]);
-    setPairInvite(await pairRes.json());
-    const joinData = await joinRes.json().catch(() => ({ command: "" }));
-    setJoinCmd(joinData.command ?? "");
+  async function resolveJoinRequest(request: JoinRequest, method: "POST" | "DELETE") {
+    setJoinPending(true);
+    setJoinActionError("");
+    const failure = `Could not ${method === "POST" ? "allow" : "ignore"} ${request.name}.`;
+    try {
+      const res = await fetch(`${JOIN_REQUESTS_URL}/${encodeURIComponent(request.key)}`, { method });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setJoinActionError(data?.error ? `${failure} ${data.error}` : failure);
+      }
+    } catch {
+      setJoinActionError(failure);
+    } finally {
+      setJoinPending(false);
+      setJoinRefresh((version) => version + 1);
+    }
+  }
+
+  async function loadPairInvite() {
+    setPairOpen(true);
+    setPairInvite(null);
+    setPairError(false);
+    try {
+      const res = await fetch("/api/v1/pair", { method: "POST" });
+      if (!res.ok) throw new Error();
+      setNowSec(Math.floor(Date.now() / 1000));
+      setPairInvite(await res.json());
+    } catch {
+      setPairError(true);
+    }
+  }
+
+  function openAddMachine() {
+    setDifferentNetworkOpen(false);
+    setJoinCmd("");
+    setJoinCmdError(false);
+    setAddMachineOpen(true);
   }
 
   // Rackdeck account (hosted Connect): is this dashboard linked, and the pending link code if signing in.
@@ -825,35 +928,56 @@ export function App() {
     setConfirmDeleteRoute(null);
   }
 
-  async function createToken(e: React.FormEvent) {
+  function openAssistantDrawer() {
+    setAssistantClient("Claude Code");
+    setAssistantScope("read");
+    setAssistantResult(null);
+    setAssistantError("");
+    setAssistantDrawerOpen(true);
+  }
+
+  function closeAssistantDrawer() {
+    if (assistantBusy) return;
+    setAssistantResult(null);
+    setAssistantDrawerOpen(false);
+  }
+
+  async function connectAssistant(e: React.FormEvent) {
     e.preventDefault();
-    if (!tokName.trim()) return;
-    const res = await fetch("/api/v1/tokens", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: tokName.trim(), client: tokClient, scope: tokScope, expiresInDays: 90 }),
-    });
-    const data = await res.json();
-    if (data.record) {
-      setTokens((prev) => [data.record, ...prev]);
-      const mcpUrl = `${location.origin}/mcp`;
-      const jsonSnippet = JSON.stringify(
-        {
-          mcpServers: {
-            rackdeck: { url: mcpUrl, headers: { Authorization: `Bearer ${data.token}` } },
-          },
-        },
-        null,
-        2
-      );
-      setCreatedToken({ token: data.token, snippet: data.snippet, jsonSnippet });
-      setTokName("");
+    if (assistantBusy) return;
+    setAssistantBusy(true);
+    setAssistantError("");
+    const date = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const name = assistantClient + " · " + date;
+    try {
+      const res = await fetch("/api/v1/tokens", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, client: assistantClient, scope: assistantScope, expiresInDays: 90 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setTokens((prev) => [data.record, ...prev.filter((token) => token.id !== data.record.id)]);
+      setAssistantResult(assistantSetup(assistantClient, location.origin, data.record.id, data.token));
+    } catch (error) {
+      setAssistantError(error instanceof Error && error.message ? error.message : "Could not connect the assistant.");
+    } finally {
+      setAssistantBusy(false);
     }
   }
 
-  async function revokeToken(id: string) {
-    await fetch(`/api/v1/tokens/${id}`, { method: "DELETE" });
-    setTokens((prev) => prev.map((t) => (t.id === id ? { ...t, revoked: true } : t)));
+  async function disconnectAssistant(token: AccessTokenRecord) {
+    setDisconnecting(token.id);
+    setAssistantsError("");
+    try {
+      const res = await fetch("/api/v1/tokens/" + encodeURIComponent(token.id), { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setTokens((prev) => prev.filter((item) => item.id !== token.id));
+    } catch {
+      setAssistantsError("Could not disconnect " + token.name + ".");
+    } finally {
+      setDisconnecting("");
+    }
   }
 
   async function runAppAction(app: ManagedApp, action: "start" | "stop" | "restart") {
@@ -889,9 +1013,19 @@ export function App() {
     }
   }
 
+  function openCustomImage(nodeId = "") {
+    setDeployNodeId(nodeId);
+    setDepErr(null);
+    setDeployOpen(true);
+  }
+
+  function addInstalledApp(app: ManagedApp) {
+    setApps((prev) => [...prev.filter((item) => item.nodeId !== app.nodeId || item.id !== app.id), app]);
+  }
+
   async function submitDeploy(e: React.FormEvent) {
     e.preventDefault();
-    if (!detailNode || !depName.trim() || !depImage.trim()) return;
+    if (depBusy || !deployNode || deployNode.status !== "online" || deployNode.docker !== "running" || !depName.trim() || !depImage.trim()) return;
     setDepBusy(true);
     setDepErr(null);
     const env: Record<string, string> = {};
@@ -900,7 +1034,7 @@ export function App() {
       if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
     }
     try {
-      const res = await fetch(`/api/v1/nodes/${encodeURIComponent(detailNode.id)}/deploy`, {
+      const res = await fetch(`/api/v1/nodes/${encodeURIComponent(deployNode.id)}/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -922,6 +1056,8 @@ export function App() {
         setDepContPort("");
         setDepEnvText("");
       }
+    } catch {
+      setDepErr("Could not reach the dashboard. Check the Apps page before trying again.");
     } finally {
       setDepBusy(false);
     }
@@ -1029,6 +1165,7 @@ export function App() {
     route.page === "machine"
       ? nodes.find((n) => n.id === route.id) ?? primaryNode
       : primaryNode;
+  const deployNode = nodes.find((node) => node.id === deployNodeId) ?? (nodes.length === 1 ? nodes[0] : undefined);
   const detailSamples = detailNode ? samples[detailNode.id] ?? [] : [];
   const latestSample = detailSamples[detailSamples.length - 1];
 
@@ -1038,6 +1175,7 @@ export function App() {
     const list: Array<{ group: string; label: string; meta?: string; run: () => void }> = [];
     const navs = [
       { label: "Machines", meta: "#/", run: () => { location.hash = "#/"; } },
+      { label: "Apps", meta: "#/apps", run: () => { location.hash = "#/apps"; } },
       { label: "Network & Connect", meta: "#/network", run: () => { location.hash = "#/network"; } },
       { label: "Access Controls", meta: "#/access", run: () => { location.hash = "#/access"; } },
       { label: "Audit", meta: "#/audit", run: () => { location.hash = "#/audit"; } },
@@ -1076,14 +1214,14 @@ export function App() {
       });
 
     const acts = [
-      { label: "Pair a machine (QR)", meta: "Pairing", run: () => openPairModal() },
+      { label: "Add machine", meta: "Machines", run: openAddMachine },
+      { label: "Pair a machine (QR)", meta: "Pairing", run: loadPairInvite },
       {
-        label: "Create MCP token",
+        label: "Connect an AI assistant",
         meta: "Access",
         run: () => {
           location.hash = "#/access";
-          setCreatedToken(null);
-          setTokenDrawerOpen(true);
+          openAssistantDrawer();
         },
       },
       {
@@ -1100,6 +1238,7 @@ export function App() {
     return list;
   }, [cmdQuery, nodes, apps, theme]);
 
+  const connectedAssistants = tokens.filter((token) => !token.revoked);
   const onlineCount = nodes.filter((n) => n.status === "online").length;
 
   if (authState.checked && authState.required && !authState.authed) {
@@ -1274,6 +1413,9 @@ export function App() {
           <a href="#/" className={`tab-link ${route.page === "machines" || route.page === "machine" ? "active" : ""}`}>
             Machines
           </a>
+          <a href="#/apps" className={"tab-link" + (route.page === "apps" ? " active" : "")}>
+            Apps
+          </a>
           <a href="#/network" className={`tab-link ${route.page === "network" ? "active" : ""}`}>
             Network &amp; Connect
           </a>
@@ -1298,10 +1440,45 @@ export function App() {
                   {nodes.length} machine{nodes.length === 1 ? "" : "s"} · {onlineCount} online
                 </p>
               </div>
-              <button type="button" className="btn btn-primary" onClick={openPairModal}>
+              <button type="button" className="btn btn-primary" onClick={openAddMachine}>
                 + Add machine
               </button>
             </div>
+
+            <div className="join-requests" aria-live="polite" aria-relevant="additions">
+              {joinRequests.map((request) => (
+                <section className="card card-pad join-request" key={request.key}>
+                  <div>
+                    <h2 className="card-title">{request.name} wants to join</h2>
+                    <p className="page-sub">{request.os} · {request.ip ?? "IP address unavailable"}</p>
+                    <div className="pair-code">{request.code}</div>
+                    <p className="page-sub">Check this matches the code on that computer.</p>
+                  </div>
+                  <div className="join-actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      aria-label={`Allow ${request.name}`}
+                      disabled={joinPending}
+                      onClick={() => resolveJoinRequest(request, "POST")}
+                    >
+                      Allow
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      aria-label={`Ignore ${request.name}`}
+                      disabled={joinPending}
+                      onClick={() => resolveJoinRequest(request, "DELETE")}
+                    >
+                      Ignore
+                    </button>
+                  </div>
+                </section>
+              ))}
+            </div>
+            {joinLoadError && <p className="inline-err" role="alert">Could not load join requests.</p>}
+            {joinActionError && <p className="inline-err" role="alert">{joinActionError}</p>}
 
             <div className="toolbar">
               <div className="filter-wrap">
@@ -1507,21 +1684,29 @@ export function App() {
                     Terminal
                   </button>
                 )}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => {
-                    setDepErr(null);
-                    setDeployOpen(true);
-                  }}
-                >
-                  + Deploy app
-                </button>
+                <a href="#/apps" className="btn btn-primary">Browse apps</a>
+                <button type="button" className="btn" onClick={() => openCustomImage(detailNode.id)}>Custom image</button>
                 <a href="#/network" className="btn">
                   {detailNode.connectEnabled ? `${detailNode.connectSlug}.rackdev.app` : "Connect"}
                 </a>
               </div>
             </div>
+
+            {detailNode.status !== "online" && (
+              <section className="card card-pad offline-help">
+                <h2 className="card-title">Why is it offline?</h2>
+                <p className="page-sub">
+                  Last seen{" "}
+                  {detailNode.lastSeen
+                    ? <time dateTime={new Date(detailNode.lastSeen * 1000).toISOString()}>{fmtAgo(detailNode.lastSeen)}</time>
+                    : "never"}
+                  .
+                </p>
+                <p>On that computer, run:</p>
+                <CommandSnippet command="rackdeck doctor" />
+                <p>It checks whether the agent is running and looks for the dashboard if it can’t reach the saved address.</p>
+              </section>
+            )}
 
             {/* Stat Grid with Sparklines including dual-polyline Network */}
             <div className="stat-grid">
@@ -1831,7 +2016,7 @@ export function App() {
                           </td>
                           <td style={{ textAlign: "right" }}>
                             {p.rackdeckVersion ? (
-                              <button type="button" className="btn btn-primary btn-sm" onClick={openPairModal}>
+                              <button type="button" className="btn btn-primary btn-sm" onClick={openAddMachine}>
                                 Add
                               </button>
                             ) : (
@@ -1993,123 +2178,57 @@ export function App() {
           </>
         )}
 
+        {route.page === "apps" && (
+          <AppCatalog nodes={nodes} apps={apps} onInstalled={addInstalledApp} onCustomImage={() => openCustomImage()} />
+        )}
+
         {/* ACCESS CONTROLS #/access */}
         {route.page === "access" && (
           <>
             <div className="page-head">
-              <div>
-                <h1 className="page-title">Access Controls</h1>
-                <p className="page-sub">
-                  Tokens for Claude Code, Codex, and Cursor.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  setCreatedToken(null);
-                  setTokenDrawerOpen(true);
-                }}
-              >
-                + Create token
-              </button>
+              <h1 className="page-title">Access Controls</h1>
             </div>
 
             <div className="stack-sections">
-              <SecretsCard nodes={nodes} />
-              <section className="card card-pad">
-                <h2 className="card-title" style={{ marginBottom: 14 }}>
-                  Let an AI coding tool manage your machines
-                  <Help title="MCP access">
-                    <p>Claude Code, Codex, or Cursor connect to Rackdeck's built-in MCP server with a token and get a small set of tools.</p>
-                    <p>You choose what each token can do. Starting, stopping, restarting and deploying apps show up in the Audit log. You can revoke a token any time. Tokens never get SSH keys or a shell.</p>
+              <section className="card card-pad assistant-card">
+                <h2 className="card-title">
+                  AI assistants
+                  <Help title="AI assistants">
+                    <h3 className="card-title">For other MCP clients</h3>
+                    <div className="assistant-address"><Copy value={location.origin + "/mcp"} /></div>
+                    <p>Assistants can read machine status and app logs, or manage apps with your permission, and can never open a terminal.</p>
+                    <p>The Audit log shows app changes and leaves out reads.</p>
+                    <p>Try asking “Install Jellyfin on my NAS”.</p>
                   </Help>
                 </h2>
-                <div className="field" style={{ marginBottom: 14 }}>
-                  <label>MCP endpoint</label>
-                  <div><Copy value={`${location.origin}/mcp`} /></div>
-                </div>
-                <div className="tbl-wrap" style={{ marginBottom: 14 }}>
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>Tool</th>
-                        <th>What it does</th>
-                        <th>Token scope</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {MCP_TOOLS.map((t) => (
-                        <tr key={t.name}>
-                          <td className="mono">{t.name}</td>
-                          <td style={{ color: "var(--text-2)" }}>{t.does}</td>
-                          <td>
-                            <span className={`pill ${t.scope === "deploy" ? "warn" : "neutral"}`}>
-                              {t.scope === "deploy" ? "deploy only" : "read + deploy"}
-                            </span>
-                          </td>
-                        </tr>
+                <p>Let Claude Code, Codex or Cursor check on your machines and manage apps for you.</p>
+                <button type="button" className="btn btn-primary" onClick={openAssistantDrawer}>
+                  Connect an assistant
+                </button>
+                <div className="assistant-list">
+                  <h3 className="card-title">Connected assistants</h3>
+                  {connectedAssistants.length ? (
+                    <ul>
+                      {connectedAssistants.map((token) => (
+                        <li key={token.id}>
+                          <div className="assistant-summary">
+                            <strong>{token.name}</strong>
+                            <span>{token.scope === "read" ? "Look only" : "Manages apps"}</span>
+                            <span>{token.lastUsedAt ? "Last used " + fmtAgo(token.lastUsedAt).toLowerCase() : "Never used"}</span>
+                            {token.expiresAt && token.expiresAt <= Date.now() / 1000 && <span className="pill neutral">Expired</span>}
+                          </div>
+                          <button type="button" className="btn btn-sm" disabled={Boolean(disconnecting)}
+                            aria-label={"Disconnect " + token.name} onClick={() => disconnectAssistant(token)}>
+                            {disconnecting === token.id ? "Disconnecting…" : "Disconnect"}
+                          </button>
+                        </li>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--text-2)", lineHeight: 1.7 }}>
-                  <li>Click <strong style={{ color: "var(--text-1)" }}>+ Create token</strong>. Choose <em>read</em> to let the tool look, or <em>deploy</em> to let it start, stop, and deploy containers too.</li>
-                  <li>Copy the setup command it shows you (Claude Code and Codex) or the JSON config (Cursor). The token is only shown once.</li>
-                  <li>Ask your tool something like "check my Rackdeck machines" or "restart uptime-kuma on CALEB-PC".</li>
-                </ol>
-              </section>
-
-              <section className="card">
-                <div className="card-head">
-                  <h2 className="card-title">MCP tokens</h2>
-                </div>
-                <div className="tbl-wrap">
-                  <table className="tbl">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Client</th>
-                        <th>Scope</th>
-                        <th className="hide-sm">Last used</th>
-                        <th>Status</th>
-                        <th style={{ textAlign: "right" }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tokens.map((t) => (
-                        <tr key={t.id}>
-                          <td className="mono" style={{ color: "var(--text)" }}>{t.name}</td>
-                          <td>{t.client}</td>
-                          <td>
-                            <span className={`pill ${t.scope === "deploy" ? "warn" : "neutral"}`}>{t.scope}</span>
-                          </td>
-                          <td className="mono hide-sm">{fmtAgo(t.lastUsedAt)}</td>
-                          <td>
-                            <span className={`pill ${t.revoked ? "neutral" : "ok"}`}>
-                              {t.revoked ? "Revoked" : "Active"}
-                            </span>
-                          </td>
-                          <td style={{ textAlign: "right" }}>
-                            {!t.revoked && (
-                              <button type="button" className="btn btn-sm btn-danger" onClick={() => revokeToken(t.id)}>
-                                Revoke
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {tokens.length === 0 && (
-                        <tr>
-                          <td colSpan={6} style={{ color: "var(--text-2)" }}>
-                            No MCP tokens created yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                    </ul>
+                  ) : <p>No assistants connected yet.</p>}
+                  {assistantsError && <p className="inline-err" role="alert">{assistantsError}</p>}
                 </div>
               </section>
+              <SecretsCard nodes={nodes} />
 
               <section className="card">
                 <div className="card-head">
@@ -2253,59 +2372,31 @@ export function App() {
         </section>
       )}
 
-      {/* Deploy App Right Drawer */}
-      {deployOpen && detailNode && (
-        <div className="backdrop right" onClick={() => setDeployOpen(false)}>
-          <aside className="side-drawer" onClick={(e) => e.stopPropagation()}>
+      {deployOpen && (
+        <div className="backdrop right" onClick={() => { if (!depBusy) setDeployOpen(false); }}>
+          <aside className="side-drawer" role="dialog" aria-labelledby="custom-image-title" onClick={(e) => e.stopPropagation()}>
             <div className="card-head">
-              <h2 className="card-title">Deploy to {detailNode.name}</h2>
-              <button type="button" className="btn btn-sm" onClick={() => setDeployOpen(false)}>✕</button>
+              <h2 className="card-title" id="custom-image-title">Custom image</h2>
+              <button type="button" className="btn btn-sm" aria-label="Close custom image dialog" disabled={depBusy} onClick={() => setDeployOpen(false)}>✕</button>
             </div>
             <div className="side-drawer-body">
-              <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>
-                Runs a Docker container on <strong style={{ color: "var(--text-1)" }}>{detailNode.name}</strong>. Pick a
-                starter app or paste any image from Docker Hub or GHCR. It restarts automatically if the machine reboots.
-              </p>
-
-              {detailNode.docker !== "running" && (
-                <div className="inline-err" style={{ margin: 0 }}>
-                  {detailNode.docker === "absent"
-                    ? `Docker isn't installed on ${detailNode.name}. Install Docker (or Docker Desktop) there first, then come back.`
-                    : `Docker is installed on ${detailNode.name} but not running. Start Docker there first.`}
-                </div>
-              )}
-
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>
-                  Starter apps
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {DEPLOY_PRESETS.map((p) => (
-                    <button
-                      key={p.label}
-                      type="button"
-                      className="btn btn-sm"
-                      title={p.about}
-                      onClick={() => {
-                        setDepName(p.name);
-                        setDepImage(p.image);
-                        setDepHostPort(p.hp);
-                        setDepContPort(p.cp);
-                        setDepEnvText(p.env);
-                      }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                {DEPLOY_PRESETS.find((p) => p.image && p.image === depImage) && (
-                  <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 6 }}>
-                    {DEPLOY_PRESETS.find((p) => p.image === depImage)?.about}
-                  </div>
-                )}
-              </div>
-
               <form onSubmit={submitDeploy} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="field">
+                  <label htmlFor="custom-image-computer">Computer</label>
+                  <select id="custom-image-computer" className="input" autoFocus required disabled={depBusy} value={deployNode?.id ?? ""}
+                    onChange={(event) => {
+                      setDeployNodeId(event.target.value);
+                      setDepErr(null);
+                    }}>
+                    <option value="" disabled>Choose a computer</option>
+                    {nodes.map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}
+                  </select>
+                </div>
+                {deployNode && (dockerUnavailable(deployNode) || deployNode.status !== "online") && (
+                  <p className="inline-err" style={{ margin: 0 }} role="status">
+                    {dockerUnavailable(deployNode) || deployNode.name + " is offline."}
+                  </p>
+                )}
                 <div className="field">
                   <label>App name</label>
                   <input className="input" style={{ width: "100%" }} placeholder="my-api" value={depName} onChange={(e) => setDepName(e.target.value)} required />
@@ -2336,7 +2427,7 @@ export function App() {
                 </div>
                 {depImage.trim() && (
                   <div className="field">
-                    <label>What Rackdeck will run on {detailNode.name}</label>
+                    <label>What Rackdeck will run</label>
                     <pre
                       className="input"
                       style={{ width: "100%", margin: 0, padding: 8, height: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", fontFamily: "var(--mono)", fontSize: 12 }}
@@ -2345,13 +2436,10 @@ export function App() {
                     </pre>
                   </div>
                 )}
-                {depErr && <div style={{ color: "var(--crit)", fontSize: 13 }}>{depErr}</div>}
-                <button type="submit" className="btn btn-primary" disabled={depBusy || detailNode.docker !== "running"}>
-                  {depBusy
-                    ? detailNode.id === primaryNode?.id
-                      ? "Deploying…"
-                      : `Sending to ${detailNode.name}… (pulling the image can take a minute)`
-                    : "Deploy container"}
+                {depErr && <p className="inline-err" role="alert">{depErr}</p>}
+                {depBusy && <p role="status">Downloading and starting… this can take a few minutes for big apps.</p>}
+                <button type="submit" className="btn btn-primary" disabled={depBusy || deployNode?.docker !== "running" || deployNode.status !== "online"}>
+                  Install custom image
                 </button>
               </form>
             </div>
@@ -2359,147 +2447,184 @@ export function App() {
         </div>
       )}
 
-      {/* Pairing Modal (Real Scannable SVG QR + Live 60s Countdown) */}
-      {pairInvite && (() => {
-        const remaining = Math.max(0, pairInvite.expiresAt - nowSec);
-        const pct = Math.min(100, (remaining / 60) * 100);
+      {addMachineOpen && (
+        <div className="backdrop" onClick={() => setAddMachineOpen(false)}>
+          <div className="modal add-machine-modal" role="dialog" aria-labelledby="add-machine-title" onClick={(e) => e.stopPropagation()}>
+            <div className="card-head">
+              <h2 className="card-title" id="add-machine-title">Add machine</h2>
+              <button type="button" className="btn btn-sm" aria-label="Close add machine dialog" autoFocus onClick={() => setAddMachineOpen(false)}>✕</button>
+            </div>
+            <div className="card-pad add-machine-body">
+              {IS_DEMO && (
+                <div className="demo-note">This demo uses sample machines.</div>
+              )}
+              <div className="add-machine-line">
+                <p>On the other computer, open a terminal and run:</p>
+                <Help title="Opening a terminal">
+                  <p>On Mac, press ⌘ Space and type Terminal.</p>
+                  <p>On Windows, open Ubuntu (WSL). On Linux, open Terminal.</p>
+                </Help>
+              </div>
+              <CommandSnippet command={INSTALL_COMMAND} />
+              <p>It finds this dashboard on your Wi-Fi and asks to join.</p>
+              {!controller.passwordSet && (
+                <p className="inline-err" role="alert">
+                  Set a dashboard password before adding computers. Restart Rackdeck with <code>RACKDECK_PASSWORD</code> set.
+                </p>
+              )}
+              <div className="add-machine-option">
+                <div className="add-machine-line">
+                  <p>Computer on a different network?</p>
+                  <Help title="Computers on other networks">
+                    <p>Computers on your home Wi-Fi find this dashboard on their own. A computer somewhere else, like a VPS or a friend's house, can't reach it through your router.</p>
+                    <p>Ways to connect it:</p>
+                    <p><strong>Tailscale</strong> (free). Install it on both computers and sign in to the same account. Then use the command under Different network.</p>
+                    <p><strong>Rackdeck Cloud</strong> (coming soon). Connects computers anywhere with no setup. <a href="https://rackdeck.dev/#pricing" target="_blank" rel="noopener">Join the waitlist</a></p>
+                  </Help>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    aria-expanded={differentNetworkOpen}
+                    aria-controls="different-network-command"
+                    onClick={() => {
+                      setJoinCmd("");
+                      setJoinCmdError(false);
+                      setDifferentNetworkOpen(!differentNetworkOpen);
+                    }}
+                  >
+                    Different network <span aria-hidden="true">{differentNetworkOpen ? "▴" : "▾"}</span>
+                  </button>
+                </div>
+                <div id="different-network-command" hidden={!differentNetworkOpen}>
+                  {primaryNode?.tailscaleIp && (
+                    <p>This dashboard is on Tailscale, so this command works from any computer on your tailnet.</p>
+                  )}
+                  {joinCmd ? <CommandSnippet command={joinCmd} /> : joinCmdError ? (
+                    <>
+                      <p className="inline-err" role="alert">Could not make a join command.</p>
+                      <button type="button" className="btn btn-sm" onClick={() => setJoinCmdAttempt((attempt) => attempt + 1)}>Try again</button>
+                    </>
+                  ) : <p role="status">Making a join command…</p>}
+                  {joinCmd && <p>Works once and expires after 15 minutes.</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pairOpen && (() => {
+        const remaining = pairInvite ? Math.max(0, pairInvite.expiresAt - nowSec) : 0;
         const expired = remaining === 0;
         return (
-          <div className="backdrop" onClick={() => setPairInvite(null)}>
+          <div className="backdrop" onClick={() => setPairOpen(false)}>
             <div className="modal" role="dialog" aria-label="Pair a machine" onClick={(e) => e.stopPropagation()}>
               <div className="card-head">
                 <h2 className="card-title">Pair a machine</h2>
-                <button type="button" className="btn btn-sm" aria-label="Close pairing dialog" onClick={() => setPairInvite(null)}>✕</button>
+                <button type="button" className="btn btn-sm" aria-label="Close pairing dialog" autoFocus onClick={() => setPairOpen(false)}>✕</button>
               </div>
-              <div className="card-pad" style={{ textAlign: "center" }}>
-                {IS_DEMO && (
-                  <div className="demo-note" role="status">
-                    Demo preview only. This QR code and join command are examples and will not connect a real machine.
-                  </div>
-                )}
-                <div style={{ filter: expired ? "blur(4px)" : "none", opacity: expired ? 0.5 : 1 }}>
-                  <QrSvg uri={pairInvite.qrUri} />
-                  <div style={{ marginBottom: 6 }}>
-                    <Copy value={pairInvite.code6} display={pairInvite.code6} className="pair-code" />
-                  </div>
-                  <div className="mono" style={{ fontSize: 11.5 }}>FP: {pairInvite.fingerprint}</div>
-                </div>
-
-                <div style={{ marginTop: 14 }}>
-                  {expired ? (
-                    <button type="button" className="btn btn-primary" onClick={openPairModal}>
-                      Generate new code
-                    </button>
-                  ) : (
-                    <>
-                      <div className="mono" style={{ fontSize: 12, color: remaining < 10 ? "var(--crit)" : "var(--text-2)" }}>
-                        Expires in 0:{String(remaining).padStart(2, "0")}
-                      </div>
-                      <div className="countdown-bar">
-                        <div className={`countdown-fill ${remaining < 10 ? "low" : ""}`} style={{ width: `${pct}%` }} />
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {!controller.passwordSet && (
-                  <div role="alert" style={{ marginTop: 18, padding: "10px 12px", textAlign: "left", fontSize: 13, border: "1px solid var(--warn)", borderRadius: 8 }}>
-                    No password is set, so Rackdeck only listens on this machine and other machines can't reach it.
-                    Restart it with <code>RACKDECK_PASSWORD</code> set, then join.
-                  </div>
-                )}
-                {joinCmd && (
-                  <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)", textAlign: "left" }}>
-                    <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>
-                      Or enroll a Linux VPS / Mac / GPU rig (15m token)
+              <div className="card-pad qr-pairing">
+                {IS_DEMO && <div className="demo-note">This QR code is a demo example.</div>}
+                {pairInvite && (
+                  <>
+                    <div style={{ filter: expired ? "blur(4px)" : "none", opacity: expired ? 0.5 : 1 }}>
+                      <QrSvg uri={pairInvite.qrUri} />
+                      <Copy value={pairInvite.code6} display={pairInvite.code6} className="pair-code" />
+                      <div className="mono">Fingerprint {pairInvite.fingerprint}</div>
                     </div>
-                    <div className="snippet-box" style={{ padding: "10px 12px" }}>
-                      <div style={{ position: "absolute", top: 8, right: 8 }}>
-                        <Copy value={joinCmd} display="Copy" />
-                      </div>
-                      <pre style={{ userSelect: "all" }}>{joinCmd}</pre>
+                    <div className="qr-countdown">
+                      {expired ? <button type="button" className="btn btn-primary" onClick={loadPairInvite}>Generate new code</button> : (
+                        <>
+                          <div className="mono">Expires in 0:{String(remaining).padStart(2, "0")}</div>
+                          <div className="countdown-bar">
+                            <div className={`countdown-fill ${remaining < 10 ? "low" : ""}`} style={{ width: `${Math.min(100, (remaining / 60) * 100)}%` }} />
+                          </div>
+                        </>
+                      )}
                     </div>
-                  </div>
+                  </>
                 )}
+                {!pairInvite && (pairError ? (
+                  <>
+                    <p className="inline-err" role="alert">Could not load a QR code.</p>
+                    <button type="button" className="btn btn-sm" onClick={loadPairInvite}>Try again</button>
+                  </>
+                ) : <p role="status">Making a QR code…</p>)}
               </div>
             </div>
           </div>
         );
       })()}
 
-      {/* Create MCP Token Right Drawer */}
-      {tokenDrawerOpen && (
-        <div className="backdrop right" onClick={() => setTokenDrawerOpen(false)}>
-          <aside className="side-drawer" onClick={(e) => e.stopPropagation()}>
+      {assistantDrawerOpen && (
+        <div className="backdrop right" onClick={closeAssistantDrawer}>
+          <aside className="side-drawer" role="dialog" aria-labelledby="assistant-dialog-title"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                closeAssistantDrawer();
+              }
+            }}>
             <div className="card-head">
-              <h2 className="card-title">Create MCP token</h2>
-              <button type="button" className="btn btn-sm" onClick={() => setTokenDrawerOpen(false)}>✕</button>
+              <h2 className="card-title" id="assistant-dialog-title">{assistantResult ? "Set up " + assistantClient : "Connect an assistant"}</h2>
+              <button type="button" className="btn btn-sm" aria-label="Close assistant setup" disabled={assistantBusy}
+                onClick={closeAssistantDrawer}>✕</button>
             </div>
-            <div className="side-drawer-body">
-              {!createdToken ? (
-                <form onSubmit={createToken} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <div className="field">
-                    <label>Token name</label>
-                    <input
-                      className="input"
-                      style={{ width: "100%" }}
-                      placeholder="cursor-laptop"
-                      value={tokName}
-                      onChange={(e) => setTokName(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Client</label>
-                    <select className="select" style={{ width: "100%" }} value={tokClient} onChange={(e) => setTokClient(e.target.value)}>
-                      <option>Claude Code</option>
-                      <option>Cursor</option>
-                      <option>Codex</option>
-                    </select>
-                  </div>
-                  <div className="field">
-                    <label>Scope</label>
-                    <div className="segmented">
-                      <button type="button" className={`seg-btn ${tokScope === "read" ? "active" : ""}`} onClick={() => setTokScope("read")}>
-                        Read
-                      </button>
-                      <button type="button" className={`seg-btn ${tokScope === "deploy" ? "active" : ""}`} onClick={() => setTokScope("deploy")}>
-                        Deploy
-                      </button>
-                    </div>
-                    <p style={{ fontSize: 12, color: "var(--text-2)", margin: "8px 0 0" }}>
-                      Terminal and shell access is never grantable to MCP tokens.
-                    </p>
-                  </div>
-                  <button type="submit" className="btn btn-primary">Create token</button>
-                </form>
-              ) : (
+            <div className="side-drawer-body assistant-drawer">
+              {assistantResult ? (
                 <>
-                  <span className="pill ok" style={{ alignSelf: "flex-start" }}>Token created — shown once</span>
-                  <div className="field">
-                    <label>Bearer token</label>
-                    <div className="snippet-box"><Copy value={createdToken.token} /></div>
-                  </div>
-                  <div className="field">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                      <label style={{ margin: 0 }}>Configuration snippet</label>
-                      <div className="segmented">
-                        <button type="button" className={`seg-btn ${snippetTab === "cli" ? "active" : ""}`} onClick={() => setSnippetTab("cli")}>CLI</button>
-                        <button type="button" className={`seg-btn ${snippetTab === "json" ? "active" : ""}`} onClick={() => setSnippetTab("json")}>JSON</button>
-                      </div>
-                    </div>
-                    <div className="snippet-box">
-                      <div style={{ position: "absolute", top: 8, right: 8 }}>
-                        <Copy
-                          value={snippetTab === "cli" ? createdToken.snippet : createdToken.jsonSnippet}
-                          display="Copy"
-                        />
-                      </div>
-                      <pre>{snippetTab === "cli" ? createdToken.snippet : createdToken.jsonSnippet}</pre>
-                    </div>
-                  </div>
-                  <button type="button" className="btn" onClick={() => setTokenDrawerOpen(false)}>Done</button>
+                  {assistantResult.kind === "command" ? (
+                    <>
+                      <p>Paste this command in a terminal.</p>
+                      <CommandSnippet command={assistantResult.command} />
+                    </>
+                  ) : (
+                    <>
+                      <a href={assistantResult.link} className="btn btn-primary">Add to Cursor</a>
+                      <details>
+                        <summary>Or copy the config</summary>
+                        <CommandSnippet command={assistantResult.config} />
+                      </details>
+                    </>
+                  )}
+                  <p>This setup is shown once.</p>
+                  <p>Try asking “How are my machines doing?”</p>
+                  <button type="button" className="btn" onClick={closeAssistantDrawer}>Done</button>
                 </>
+              ) : (
+                <form className="assistant-form" onSubmit={connectAssistant}>
+                  <fieldset disabled={assistantBusy}>
+                    <legend>Which assistant?</legend>
+                    <div className="assistant-options clients">
+                      {ASSISTANTS.map((client, index) => (
+                        <label key={client} className="assistant-option">
+                          <input type="radio" name="assistant" value={client} checked={assistantClient === client}
+                            autoFocus={index === 0} onChange={() => setAssistantClient(client)} />
+                          <strong>{client}</strong>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <fieldset disabled={assistantBusy}>
+                    <legend>What can it do?</legend>
+                    <div className="assistant-options">
+                      <label className="assistant-option">
+                        <input type="radio" name="assistant-scope" checked={assistantScope === "read"} onChange={() => setAssistantScope("read")} />
+                        <span><strong>Look only</strong><small>See your machines and read app logs.</small></span>
+                      </label>
+                      <label className="assistant-option">
+                        <input type="radio" name="assistant-scope" checked={assistantScope === "deploy"} onChange={() => setAssistantScope("deploy")} />
+                        <span><strong>Look and manage apps</strong><small>Also start, stop, restart and install apps.</small></span>
+                      </label>
+                    </div>
+                    <p className="assistant-permission-note">It can never open a terminal.</p>
+                  </fieldset>
+                  {assistantError && <p className="inline-err" role="alert">{assistantError}</p>}
+                  <button type="submit" className="btn btn-primary" disabled={assistantBusy}>
+                    {assistantBusy ? "Connecting…" : "Connect"}
+                  </button>
+                </form>
               )}
             </div>
           </aside>

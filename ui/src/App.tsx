@@ -236,6 +236,11 @@ export function App() {
   const [samples, setSamples] = useState<Record<string, TelemetrySample[]>>({});
   const [connState, setConnState] = useState<"live" | "reconnecting" | "offline">("reconnecting");
   const [rttMs, setRttMs] = useState<number | null>(null);
+  // Which node is this controller, and is it password-protected (no password = localhost only).
+  const [controller, setController] = useState<{ nodeId: string | null; passwordSet: boolean }>({
+    nodeId: null,
+    passwordSet: true,
+  });
   const [connectHealth, setConnectHealth] = useState<{ enabled: boolean; active: boolean }>({
     enabled: false,
     active: false,
@@ -395,10 +400,21 @@ export function App() {
 
       ws.onclose = () => {
         window.clearInterval(pingTimer);
-        if (!closed) {
-          setConnState("reconnecting");
-          retryTimer = window.setTimeout(connect, 2000);
-        }
+        if (closed) return;
+        setConnState("reconnecting");
+        // A restart or logout ends the session; show the login screen instead of retrying forever.
+        fetch("/api/v1/auth/status")
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.passwordRequired && !d.authenticated) {
+              setAuthState({ checked: true, required: true, authed: false });
+            } else {
+              retryTimer = window.setTimeout(connect, 2000);
+            }
+          })
+          .catch(() => {
+            retryTimer = window.setTimeout(connect, 2000);
+          });
       };
     }
 
@@ -416,7 +432,10 @@ export function App() {
     const check = () => {
       fetch("/api/v1/health")
         .then((r) => r.json())
-        .then((d) => setConnectHealth({ enabled: Boolean(d.connectEnabled), active: Boolean(d.connectActive) }))
+        .then((d) => {
+          setConnectHealth({ enabled: Boolean(d.connectEnabled), active: Boolean(d.connectActive) });
+          setController({ nodeId: d.nodeId ?? null, passwordSet: Boolean(d.passwordSet) });
+        })
         .catch(() => {});
     };
     check();
@@ -697,7 +716,7 @@ export function App() {
     });
   }, [nodes, machineQuery, machineStatusFilter]);
 
-  const primaryNode = nodes[0] ?? null;
+  const primaryNode = nodes.find((n) => n.id === controller.nodeId) ?? nodes[0] ?? null;
   const detailNode =
     route.page === "machine"
       ? nodes.find((n) => n.id === route.id) ?? primaryNode
@@ -1098,16 +1117,18 @@ export function App() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    setDrawerTab("terminal");
-                    setDrawerOpen(true);
-                  }}
-                >
-                  Terminal
-                </button>
+                {detailNode.id === primaryNode?.id && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      setDrawerTab("terminal");
+                      setDrawerOpen(true);
+                    }}
+                  >
+                    Terminal
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -1742,7 +1763,7 @@ export function App() {
                   className={`seg-btn ${drawerTab === "terminal" ? "active" : ""}`}
                   onClick={() => setDrawerTab("terminal")}
                 >
-                  Terminal
+                  Terminal{primaryNode ? ` · ${primaryNode.name}` : ""}
                 </button>
               </div>
               {drawerTab === "logs" && (
@@ -1965,6 +1986,12 @@ export function App() {
                   )}
                 </div>
 
+                {!controller.passwordSet && (
+                  <div role="alert" style={{ marginTop: 18, padding: "10px 12px", textAlign: "left", fontSize: 13, border: "1px solid var(--warn)", borderRadius: 8 }}>
+                    No password is set, so Rackdeck only listens on this machine and other machines can't reach it.
+                    Restart it with <code>RACKDECK_PASSWORD</code> set, then join.
+                  </div>
+                )}
                 {joinCmd && (
                   <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)", textAlign: "left" }}>
                     <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-2)", marginBottom: 6 }}>

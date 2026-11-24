@@ -56,6 +56,12 @@ impl LocalNodeAdapter {
         }
     }
 
+    /// Use a persisted id instead of the hostname-derived one (agents, so same-named hosts don't collide).
+    pub fn with_node_id(mut self, id: String) -> Self {
+        self.node_id = id;
+        self
+    }
+
     pub fn node_id(&self) -> &str {
         &self.node_id
     }

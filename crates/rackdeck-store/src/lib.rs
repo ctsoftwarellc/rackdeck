@@ -21,6 +21,8 @@ enum DbCmd {
         slug: Option<String>,
         reply: oneshot::Sender<CoreResult<Node>>,
     },
+    GetAgentKey(String, oneshot::Sender<CoreResult<Option<String>>>),
+    SetAgentKey(String, String, oneshot::Sender<CoreResult<()>>),
     ListRoutes(oneshot::Sender<CoreResult<Vec<ConnectRoute>>>),
     UpsertRoute(ConnectRoute, oneshot::Sender<CoreResult<()>>),
     DeleteRoute(String, oneshot::Sender<CoreResult<bool>>),
@@ -102,6 +104,11 @@ fn init_schema(conn: &Connection) -> CoreResult<()> {
             payload_json TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_keys (
+            node_id TEXT PRIMARY KEY,
+            key_hash TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS routes (
             id TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL
@@ -167,6 +174,28 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
                 }
                 Ok(out)
             })();
+            let _ = reply.send(res);
+        }
+        DbCmd::GetAgentKey(node_id, reply) => {
+            let res = conn
+                .query_row(
+                    "SELECT key_hash FROM agent_keys WHERE node_id = ?1",
+                    params![node_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::SetAgentKey(node_id, hash, reply) => {
+            let res = conn
+                .execute(
+                    "INSERT INTO agent_keys (node_id, key_hash) VALUES (?1, ?2)
+                     ON CONFLICT(node_id) DO UPDATE SET key_hash = excluded.key_hash",
+                    params![node_id, hash],
+                )
+                .map(|_| ())
+                .map_err(|e| CoreError::Storage(e.to_string()));
             let _ = reply.send(res);
         }
         DbCmd::GetNode(id, reply) => {
@@ -515,6 +544,12 @@ impl FleetRepository for SqliteStore {
     }
     async fn get_node(&self, id: &str) -> CoreResult<Option<Node>> {
         self.call(|r| DbCmd::GetNode(id.to_string(), r)).await
+    }
+    async fn agent_key_hash(&self, node_id: &str) -> CoreResult<Option<String>> {
+        self.call(|r| DbCmd::GetAgentKey(node_id.to_string(), r)).await
+    }
+    async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()> {
+        self.call(|r| DbCmd::SetAgentKey(node_id.to_string(), key_hash.to_string(), r)).await
     }
     async fn set_connect_state(
         &self,

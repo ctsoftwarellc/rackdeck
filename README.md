@@ -25,13 +25,17 @@ cargo build --release -p rackdeck -p rackdeck-relay
 RACKDECK_PASSWORD="choose-a-strong-password" ./target/release/rackdeck
 ```
 
+Without `RACKDECK_PASSWORD`, Rackdeck only listens on 127.0.0.1. Set a password if you want to open it from another device or join other machines.
+
 ### Join a second machine (VPS, GPU rig, or Mac)
-1. Open the dashboard → click **`+ Add machine`**.
-2. Copy the generated 15-minute join command (or scan the QR code from your phone).
-3. Run it on your remote machine:
+1. Open the dashboard and click **`+ Add machine`**.
+2. Copy the join command. The token in it works once and expires after 15 minutes.
+3. Run it on the other machine:
 ```bash
-rackdeck agent --controller http://<controller-ip>:7420 --token <rd_join_...>
+curl -fsSL https://get.rackdeck.dev | sh -s -- --controller http://<controller-ip>:7420 --join <rd_join_...>
 ```
+
+The installer sets the agent up as a service (systemd on Linux, a LaunchAgent on macOS), so it keeps running after you log out and comes back after a reboot. The agent saves its key in `/var/lib/rackdeck/agent.json` (Linux service) or `~/.config/rackdeck/agent.json`, so restarts don't need a new token. Machines that stop checking in show as offline after about 15 seconds.
 
 ---
 

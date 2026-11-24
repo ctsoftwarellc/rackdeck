@@ -47,7 +47,6 @@ pub struct ApiState {
     pub latest_apps: Arc<RwLock<Vec<ManagedApp>>>,
     pub remote_apps: Arc<RwLock<HashMap<String, Vec<ManagedApp>>>>,
     pub join_tokens: Arc<RwLock<HashMap<String, u64>>>,
-    pub agent_keys: Arc<RwLock<HashMap<String, String>>>,
     pub agent_bus: Arc<AgentBus>,
     pub owner_password: Option<String>,
     pub owner_sessions: Arc<RwLock<HashMap<String, u64>>>,
@@ -96,15 +95,20 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 async fn is_valid_owner_session(headers: &HeaderMap, state: &ApiState) -> bool {
+    session_still_valid(state, extract_session_cookie(headers).as_deref()).await
+}
+
+/// Re-checked per privileged socket message so logout or expiry cuts off an open socket.
+async fn session_still_valid(state: &ApiState, sid: Option<&str>) -> bool {
     if state.owner_password.is_none() {
         return true;
     }
-    let Some(sid) = extract_session_cookie(headers) else {
-        return false;
-    };
-    let sessions = state.owner_sessions.read().await;
-    sessions
-        .get(&sid)
+    let Some(sid) = sid else { return false };
+    state
+        .owner_sessions
+        .read()
+        .await
+        .get(sid)
         .is_some_and(|&exp| now_unix_secs() <= exp)
 }
 
@@ -244,6 +248,7 @@ async fn health(State(state): State<ApiState>) -> impl IntoResponse {
         "service": "rackdeck",
         "version": env!("CARGO_PKG_VERSION"),
         "nodeId": state.local_node_id,
+        "passwordSet": state.owner_password.is_some(),
         "connectEnabled": enabled,
         "connectActive": connected
     }))
@@ -431,9 +436,15 @@ async fn agent_checkin(
     }
 
     // Authorize via either an already-enrolled agent key or a valid 15-minute join token
-    let already_enrolled = {
-        let keys = state.agent_keys.read().await;
-        keys.get(&body.node.id).is_some_and(|k| k == bearer)
+    if body.node.id == state.local_node_id {
+        return err_res(CoreError::Forbidden(
+            "that machine id belongs to the controller itself".into(),
+        ));
+    }
+    let bearer_hash = hex::encode(Sha256::digest(bearer.as_bytes()));
+    let already_enrolled = match state.fleet_repo.agent_key_hash(&body.node.id).await {
+        Ok(h) => h.as_deref() == Some(bearer_hash.as_str()),
+        Err(e) => return err_res(e),
     };
     let mut issued_agent_key: Option<String> = None;
 
@@ -458,11 +469,10 @@ async fn agent_checkin(
         let mut raw = [0u8; 24];
         rand::thread_rng().fill(&mut raw);
         let agent_key = format!("rd_agent_{}", hex::encode(raw));
-        state
-            .agent_keys
-            .write()
-            .await
-            .insert(body.node.id.clone(), agent_key.clone());
+        let key_hash = hex::encode(Sha256::digest(agent_key.as_bytes()));
+        if let Err(e) = state.fleet_repo.set_agent_key_hash(&body.node.id, &key_hash).await {
+            return err_res(e);
+        }
         issued_agent_key = Some(agent_key);
 
         let ev = AuditEvent {
@@ -676,7 +686,10 @@ async fn start_connect_checkout(
     }
 }
 
-async fn list_routes(State(state): State<ApiState>) -> Response {
+async fn list_routes(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = resolve_principal(&headers, &state).await {
+        return r;
+    }
     match state.route_repo.list_routes().await {
         Ok(routes) => Json(serde_json::json!({ "routes": routes })).into_response(),
         Err(e) => err_res(e),
@@ -859,7 +872,10 @@ async fn revoke_token(
     }
 }
 
-async fn list_audit(State(state): State<ApiState>) -> Response {
+async fn list_audit(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if !is_valid_owner_session(&headers, &state).await {
+        return err_res(CoreError::Unauthorized("authentication required".into()));
+    }
     match state.audit_repo.list_audit(100).await {
         Ok(events) => Json(serde_json::json!({ "events": events })).into_response(),
         Err(e) => err_res(e),
@@ -874,7 +890,8 @@ async fn ws_handler(
     if !is_valid_owner_session(&headers, &state).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    ws.on_upgrade(move |socket| handle_ui_ws(socket, state))
+    let sid = extract_session_cookie(&headers);
+    ws.on_upgrade(move |socket| handle_ui_ws(socket, state, sid))
 }
 
 /// Live logs for an app on a remote agent: poll its tail every 3s and forward only new lines.
@@ -916,7 +933,7 @@ async fn follow_remote_logs(
     }
 }
 
-async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
+async fn handle_ui_ws(socket: WebSocket, state: ApiState, sid: Option<String>) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
@@ -1063,6 +1080,15 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
                     }
                     ClientWsCommand::TermExec { sub, cmd } => {
                         let tx = reply_tx.clone();
+                        if !session_still_valid(&state, sid.as_deref()).await {
+                            if let Ok(out) = serde_json::to_string(&ServerWsEvent::TermOut {
+                                sub,
+                                text: "error: your session ended, reload and log in again\n".into(),
+                            }) {
+                                let _ = tx.send(out).await;
+                            }
+                            continue;
+                        }
                         let audit = state.audit_repo.clone();
                         let ws_bcast = state.ws_tx.clone();
                         let node_id = state.local_node_id.clone();
@@ -1073,6 +1099,7 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
                                     .args(["-lc", &cmd])
                                     .stdout(std::process::Stdio::piped())
                                     .stderr(std::process::Stdio::piped())
+                                    .kill_on_drop(true)
                                     .output(),
                             )
                             .await;
@@ -1104,7 +1131,7 @@ async fn handle_ui_ws(socket: WebSocket, state: ApiState) {
                                 ts: now_unix_secs(),
                                 actor: "you (web)".into(),
                                 action: "terminal exec".into(),
-                                target: format!("{node_id}: {}", cmd.chars().take(48).collect::<String>()),
+                                target: node_id,
                                 ok: true,
                                 reason: None,
                             };

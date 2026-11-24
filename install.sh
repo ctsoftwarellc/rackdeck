@@ -49,9 +49,60 @@ else
 fi
 
 echo "Installed rackdeck to ${INSTALL_DIR}/rackdeck"
+BIN="${INSTALL_DIR}/rackdeck"
+SUDO=""
+[ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
 if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
   echo "Joining controller at ${CONTROLLER}..."
-  exec "${INSTALL_DIR}/rackdeck" agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"
+  # Run the agent as a background service so it survives logout and reboots.
+  # After the first check-in it uses the key saved in its state file; the join token is just for first contact.
+  if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    $SUDO tee /etc/systemd/system/rackdeck-agent.service >/dev/null <<UNIT
+[Unit]
+Description=Rackdeck agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${BIN} agent --controller ${CONTROLLER} --token ${JOIN_TOKEN}
+Environment=RACKDECK_AGENT_STATE=/var/lib/rackdeck/agent.json
+StateDirectory=rackdeck
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now rackdeck-agent
+    echo "Agent running as systemd service rackdeck-agent (logs: journalctl -u rackdeck-agent -f)"
+  elif [ "$OS" = "darwin" ]; then
+    PLIST="$HOME/Library/LaunchAgents/dev.rackdeck.agent.plist"
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.rackdeck.agent</string>
+  <key>ProgramArguments</key><array>
+    <string>${BIN}</string><string>agent</string>
+    <string>--controller</string><string>${CONTROLLER}</string>
+    <string>--token</string><string>${JOIN_TOKEN}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/rackdeck-agent.log</string>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/rackdeck-agent.log</string>
+</dict></plist>
+PLIST
+    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl load -w "$PLIST"
+    echo "Agent running as a LaunchAgent (logs: ~/Library/Logs/rackdeck-agent.log)"
+  else
+    echo "No systemd found, running in the foreground. It stops when this shell closes."
+    exec "$BIN" agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"
+  fi
 else
   echo "Run: rackdeck   (opens control panel on http://127.0.0.1:7420)"
 fi

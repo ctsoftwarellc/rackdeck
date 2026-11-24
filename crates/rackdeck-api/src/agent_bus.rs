@@ -42,6 +42,21 @@ impl AgentBus {
         self.queued.lock().await.remove(node_id).unwrap_or_default()
     }
 
+    /// Nodes that stopped checking in. Each is returned once, then forgotten until it checks in again.
+    pub async fn take_stale(&self) -> Vec<String> {
+        let now = now_unix_secs();
+        let mut seen = self.last_seen.lock().await;
+        let stale: Vec<String> = seen
+            .iter()
+            .filter(|(_, &t)| now.saturating_sub(t) > OFFLINE_AFTER_SECS)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &stale {
+            seen.remove(id);
+        }
+        stale
+    }
+
     async fn run(&self, node_id: &str, op: AgentOp, timeout: Duration) -> CoreResult<AgentOutput> {
         match self.last_seen.lock().await.get(node_id).copied() {
             None => {

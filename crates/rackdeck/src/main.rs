@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use rackdeck_api::{build_router, AgentBus, ApiState, AssetProvider};
-use rackdeck_core::{FleetRepository, FleetService, NodeOps};
+use rackdeck_core::{FleetRepository, FleetService, NodeOps, NodeStatus};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
 use rackdeck_protocol::{AgentCommand, AgentCommandResult, AgentOp, AgentOutput, ServerWsEvent};
@@ -75,6 +75,14 @@ pub async fn build_all_in_one_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Remote machines are online once they check in; until then they're offline, not "last known".
+    for mut n in store.list_nodes().await.unwrap_or_default() {
+        if n.id != initial_node.id && n.status != NodeStatus::Offline {
+            n.status = NodeStatus::Offline;
+            let _ = store.upsert_node(n).await;
+        }
+    }
+
     let signing_key = Arc::new(load_or_create_signing_key(db_path));
     let (ws_tx, _) = broadcast::channel::<ServerWsEvent>(256);
 
@@ -103,7 +111,6 @@ pub async fn build_all_in_one_state(
         latest_apps: Arc::new(RwLock::new(initial_apps)),
         remote_apps: Arc::new(RwLock::new(HashMap::new())),
         join_tokens: Arc::new(RwLock::new(HashMap::new())),
-        agent_keys: Arc::new(RwLock::new(HashMap::new())),
         agent_bus,
         owner_password: std::env::var("RACKDECK_PASSWORD").ok().filter(|s| !s.is_empty()),
         owner_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -132,6 +139,7 @@ pub async fn build_all_in_one_state(
                 });
             }
             if tick % 5 == 0 {
+                mark_stale_nodes_offline(&bg_state).await;
                 if let Ok(apps) = bg_state.local_node.list_apps().await {
                     *bg_state.latest_apps.write().await = apps.clone();
                     let mut combined = apps;
@@ -150,11 +158,71 @@ pub async fn build_all_in_one_state(
     Ok(state)
 }
 
+/// Agents that stopped checking in: flag offline and drop their cached apps so nothing shows "running".
+async fn mark_stale_nodes_offline(state: &ApiState) {
+    for id in state.agent_bus.take_stale().await {
+        state.remote_apps.write().await.remove(&id);
+        if let Ok(Some(mut node)) = state.fleet_repo.get_node(&id).await {
+            node.status = NodeStatus::Offline;
+            let _ = state.fleet_repo.upsert_node(node.clone()).await;
+            let _ = state.ws_tx.send(ServerWsEvent::Node { node });
+        }
+    }
+}
+
+/// What an agent remembers between runs: its machine id and the key the controller issued.
+#[derive(Default)]
+struct AgentState {
+    node_id: String,
+    agent_key: Option<String>,
+}
+
+fn agent_state_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("RACKDECK_AGENT_STATE") {
+        return p.into();
+    }
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => std::path::Path::new(&home).join(".config/rackdeck/agent.json"),
+        _ => "/var/lib/rackdeck/agent.json".into(),
+    }
+}
+
+fn save_agent_state(path: &std::path::Path, st: &AgentState) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let json = serde_json::json!({ "nodeId": st.node_id, "agentKey": st.agent_key }).to_string();
+    if let Err(e) = std::fs::write(path, json) {
+        tracing::warn!("couldn't save agent state to {}: {e}", path.display());
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
 async fn run_remote_agent(controller: String, initial_token: String) -> Result<(), Box<dyn std::error::Error>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
-    let local = Arc::new(LocalNodeAdapter::new(7420));
+    let state_path = agent_state_path();
+    let mut saved = std::fs::read(&state_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .map(|v| AgentState {
+            node_id: v["nodeId"].as_str().unwrap_or_default().to_string(),
+            agent_key: v["agentKey"].as_str().map(str::to_string),
+        })
+        .unwrap_or_default();
+    if saved.node_id.is_empty() {
+        // Hostname plus a random suffix, so two boxes called `ubuntu` stay separate machines.
+        let base = LocalNodeAdapter::new(7420).node_id().to_string();
+        saved.node_id = format!("{base}-{:06x}", rand::random::<u32>() & 0xff_ffff);
+        save_agent_state(&state_path, &saved);
+    }
+    let local = Arc::new(LocalNodeAdapter::new(7420).with_node_id(saved.node_id.clone()));
     let host_port = controller
         .trim_start_matches("http://")
         .trim_start_matches("https://")
@@ -163,7 +231,12 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         .ok_or("invalid controller url")?
         .to_string();
 
-    let mut bearer = initial_token;
+    // A saved key survives restarts; the one-time join token is only a fallback for first contact.
+    let mut join_token = Some(initial_token);
+    let mut bearer = match saved.agent_key.clone() {
+        Some(k) => k,
+        None => join_token.take().unwrap_or_default(),
+    };
     let mut enrolled = false;
     let mut last_err: Option<String> = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -265,6 +338,13 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
         let status_line = raw.lines().next().unwrap_or("").trim().to_string();
         let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").trim();
         if !status_line.contains(" 200 ") && !status_line.ends_with(" 200") {
+            if status_line.contains(" 401") {
+                if let Some(t) = join_token.take() {
+                    tracing::info!("saved agent key was rejected, trying the join token instead");
+                    bearer = t;
+                    continue;
+                }
+            }
             let msg = format!("controller {host_port} rejected checkin: {status_line} ({body})");
             if last_err.as_deref() != Some(&msg) {
                 tracing::warn!("{msg}");
@@ -296,6 +376,8 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
             }
             if let Some(k) = val.get("agentKey").and_then(|v| v.as_str()) {
                 bearer = k.to_string();
+                saved.agent_key = Some(bearer.clone());
+                save_agent_state(&state_path, &saved);
                 enrolled = true;
                 tracing::info!("connected & enrolled with controller {controller} as {}", local.callsign());
             } else if !enrolled {
@@ -324,7 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h" | "help")) {
         println!(
-            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Enable HttpOnly session login\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
+            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -367,11 +449,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = build_all_in_one_state(port, &db_path, relay_ws_url, true).await?;
     let node_id = state.local_node_id.clone();
+
+    let password_set = state.owner_password.is_some();
     let app = build_router(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("rackdeck all-in-one listening on http://127.0.0.1:{port} (node={node_id})");
+    // Without a password anyone who can reach the port is the owner (terminal included),
+    // so only listen on this machine until one is set.
+    let ip = if password_set { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from((ip, port))).await?;
+    if password_set {
+        tracing::info!("rackdeck listening on port {port} on all interfaces (node={node_id})");
+    } else {
+        tracing::warn!(
+            "no RACKDECK_PASSWORD set: only reachable from this machine at http://127.0.0.1:{port}. \
+             Set RACKDECK_PASSWORD to open it to other devices and let machines join."
+        );
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -500,7 +593,18 @@ mod tests {
             serde_json::from_str(join_res.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         let join_tok = join_body["token"].as_str().unwrap();
 
+        // A join token can't be used to impersonate the controller itself.
+        let local_id = http_get(server_addr, "/api/v1/health").await;
+        let local_id = serde_json::from_str::<serde_json::Value>(local_id.split("\r\n\r\n").nth(1).unwrap())
+            .unwrap()["nodeId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
         let checkin_payload = r#"{"node":{"id":"node-home-5090","name":"HOME-5090","kind":"gpu","os":"Ubuntu 24.04","kernel":"6.11","status":"online","lastSeen":1700000000,"uptimeSecs":4200,"hw":{"cpuCores":16,"ramTotalMb":65536,"diskTotalGb":2000,"accel":{"kind":"nvidia","gpus":[{"idx":0,"name":"RTX 5090","vramTotalMb":32768}],"driver":"570","driverLoaded":true}},"docker":"running","version":"0.1.0","lanIp":"192.168.1.50","tailscaleIp":"100.88.1.50","connectSlug":"home-5090","connectEnabled":false},"sample":{"t":1700000000,"cpu":12.5,"memMb":16384,"diskGb":420,"netRxBps":12000,"netTxBps":4000,"gpu":[84.0],"vramMb":[27648],"tempC":68.0},"apps":[{"id":"ai:ninfer","nodeId":"node-home-5090","name":"ninfer","type":"ai","runner":"ninfer","model":"Qwen3.8-27B","state":"running","ports":[8080],"domains":[],"usage":{"cpu":4.0,"memMb":2048,"vramMb":27648}}]}"#;
+        let spoof = checkin_payload.replacen(r#""id":"node-home-5090""#, &format!(r#""id":"{local_id}""#), 1);
+        let spoof_res = http_post_json(server_addr, "/api/v1/agent/checkin", &spoof, Some(join_tok)).await;
+        assert!(spoof_res.contains("403"), "controller id should be reserved: {spoof_res}");
         let checkin_res = http_post_json(
             server_addr,
             "/api/v1/agent/checkin",

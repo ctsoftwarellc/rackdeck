@@ -26,6 +26,9 @@ pub trait FleetRepository: Send + Sync {
         enabled: bool,
         slug: Option<String>,
     ) -> CoreResult<Node>;
+    /// sha256 hex of the key a joined agent authenticates with.
+    async fn agent_key_hash(&self, node_id: &str) -> CoreResult<Option<String>>;
+    async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()>;
 }
 
 #[async_trait]

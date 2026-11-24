@@ -11,8 +11,8 @@
   "securityEmail": "security@rackdeck.dev",
   "license": "Apache-2.0",
   "pricing": {
-    "core": "$0 forever",
-    "connect": "$9/mo",
-    "cloud": "$19/mo"
+    "community": "Free forever",
+    "cloudMonthly": "$19/mo",
+    "cloudAnnual": "$190/yr"
   }
 }

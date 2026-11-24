@@ -134,6 +134,52 @@ fn detect_ai_runner(line: &str) -> Option<(&'static str, u16)> {
     Some((runner, port))
 }
 
+/// Checks before installing anything, so a bad install fails with a plain reason instead of
+/// breaking the machine: Docker is up, the ports are free, and a new download leaves room on disk.
+async fn preflight(spec: &DeploySpec) -> Result<(), CoreError> {
+    if run_cmd("docker", &["info", "--format", "{{.ServerVersion}}"]).await.is_none() {
+        return Err(CoreError::Runtime(if cfg!(target_os = "macos") {
+            "Docker isn't running on this machine. Install or open Docker Desktop or OrbStack, then try again.".into()
+        } else {
+            "Docker isn't running on this machine. Start it (sudo systemctl start docker), then try again.".into()
+        }));
+    }
+    let mut maps: Vec<String> = spec.ports.clone();
+    if let Some(hp) = spec.host_port {
+        maps.push(format!("{hp}:0"));
+    }
+    for m in &maps {
+        let (map, proto) = m.split_once('/').unwrap_or((m.as_str(), "tcp"));
+        let Some(port) = map.split(':').next().and_then(|p| p.parse::<u16>().ok()) else { continue };
+        // Only "in use" counts; a permission error on a low port just means Docker binds it instead of us.
+        let in_use = |e: std::io::Error| e.kind() == std::io::ErrorKind::AddrInUse;
+        let free = if proto == "udp" {
+            std::net::UdpSocket::bind(("0.0.0.0", port)).map(|_| ()).map_or_else(|e| !in_use(e), |_| true)
+        } else {
+            std::net::TcpListener::bind(("0.0.0.0", port)).map(|_| ()).map_or_else(|e| !in_use(e), |_| true)
+        };
+        if !free {
+            return Err(CoreError::InvalidInput(format!(
+                "port {port} is already in use on this machine, so the app couldn't use it"
+            )));
+        }
+    }
+    // Only a new download needs space; an image already on the machine doesn't.
+    if run_cmd("docker", &["image", "inspect", &spec.image]).await.is_none() {
+        // ponytail: checks the host's / (Docker's usual home on Linux); Docker Desktop's VM disk isn't seen.
+        let free_gb = run_cmd("df", &["-Pk", "/"])
+            .await
+            .and_then(|out| out.lines().nth(1)?.split_whitespace().nth(3)?.parse::<u64>().ok())
+            .map(|kb| kb / 1024 / 1024);
+        if let Some(gb) = free_gb.filter(|gb| *gb < 10) {
+            return Err(CoreError::Runtime(format!(
+                "only {gb} GB free on this machine. Rackdeck needs 10 GB free before downloading a new app."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// `docker run` flags for a spec's extra ports, volumes and GPU. Rejects anything malformed.
 fn extra_run_args(spec: &DeploySpec) -> Result<Vec<String>, CoreError> {
     let mut args: Vec<String> = Vec::new();
@@ -531,6 +577,8 @@ impl NodeOps for LocalNodeAdapter {
             }
         }
         args.push(spec.image.clone());
+
+        preflight(&spec).await?;
 
         // Pull first with a long timeout: AI images are several GB. `docker run` then starts quickly.
         let pull = tokio::time::timeout(

@@ -121,7 +121,7 @@
     "hostPort": 3080,
     "containerPort": 8080,
     "volumes": [
-      "ollama:/root/.ollama",
+      "open-webui-ollama:/root/.ollama",
       "open-webui:/app/backend/data"
     ],
     "gpu": true,

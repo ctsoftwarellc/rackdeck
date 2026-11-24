@@ -106,8 +106,10 @@ impl FleetService {
         }
 
         // A host folder mount reaches the machine's files, so only the owner may use one, not a token.
-        if !matches!(principal, Principal::Owner { .. }) && spec.volumes.iter().any(|v| v.starts_with('/')) {
-            return Err(crate::CoreError::Forbidden("only the owner can mount folders from the machine".into()));
+        if !matches!(principal, Principal::Owner { .. }) {
+            if let Err(e) = assistant_volumes_ok(&spec) {
+                return Err(crate::CoreError::Forbidden(e));
+            }
         }
         let res = if node_id == self.local_node_id {
             self.local_node.deploy_app(spec).await
@@ -142,6 +144,49 @@ impl FleetService {
             self.local_node.tail_logs(app_id, lines).await
         } else {
             self.remote.tail_logs(node_id, app_id, lines).await
+        }
+    }
+}
+
+/// Assistants (tokens) only get storage named after the app they install, so they can't attach
+/// another app's data (say, the password vault's). Host folders are the owner's call.
+fn assistant_volumes_ok(spec: &DeploySpec) -> Result<(), String> {
+    for v in &spec.volumes {
+        let src = v.split(':').next().unwrap_or_default();
+        if src.starts_with('/') {
+            return Err("only the owner can give an app a folder from the machine".into());
+        }
+        if src != spec.name && !src.starts_with(&format!("{}-", spec.name)) {
+            return Err(format!(
+                "storage `{src}` must be named after the app: `{0}` or `{0}-something`",
+                spec.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod assistant_rules_tests {
+    use super::*;
+
+    #[test]
+    fn volumes_must_belong_to_the_app() {
+        let mut spec = DeploySpec {
+            name: "open-webui".into(),
+            image: "x".into(),
+            host_port: None,
+            container_port: None,
+            env: Default::default(),
+            ports: vec![],
+            volumes: vec![],
+            gpu: false,
+        };
+        spec.volumes = vec!["open-webui:/data".into(), "open-webui-ollama:/root/.ollama".into()];
+        assert!(assistant_volumes_ok(&spec).is_ok());
+        for bad in ["vaultwarden-data:/data", "/etc:/x", "open-webuix:/data"] {
+            spec.volumes = vec![bad.into()];
+            assert!(assistant_volumes_ok(&spec).is_err(), "{bad}");
         }
     }
 }

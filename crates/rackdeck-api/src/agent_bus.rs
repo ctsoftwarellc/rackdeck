@@ -100,6 +100,21 @@ impl AgentBus {
     }
 }
 
+impl AgentBus {
+    /// Ask an agent to update itself. Allows for a slow download plus a check-in round trip.
+    /// Agents older than this feature drop the unknown command, so they time out instead.
+    pub async fn update(&self, node_id: &str) -> CoreResult<Option<String>> {
+        match self.run(node_id, AgentOp::Update, Duration::from_secs(330)).await {
+            Ok(AgentOutput::Updated { version }) => Ok(version),
+            Ok(_) => Err(unexpected()),
+            Err(CoreError::Runtime(m)) if m.contains("didn't answer") => Err(CoreError::Runtime(format!(
+                "{m}. If this machine runs an older agent, rerun its install command once"
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 fn unexpected() -> CoreError {
     CoreError::Runtime("agent sent an unexpected reply".into())
 }

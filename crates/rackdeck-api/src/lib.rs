@@ -24,6 +24,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
 
 mod agent_bus;
+pub mod update;
 pub use agent_bus::AgentBus;
 
 pub trait AssetProvider: Send + Sync {
@@ -66,6 +67,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/nodes/{node_id}/deploy", post(deploy_node_app))
         .route("/api/v1/nodes/{node_id}/apps/{app_id}/{action}", post(run_app_action))
         .route("/api/v1/nodes/{node_id}/apps/{app_id}/logs", get(get_app_logs))
+        .route("/api/v1/nodes/{node_id}/update", post(update_node))
         .route("/api/v1/discovery/scan", post(scan_network))
         .route("/api/v1/join-token", post(issue_join_token))
         .route("/api/v1/agent/checkin", post(agent_checkin))
@@ -330,6 +332,51 @@ async fn run_app_action(
         .await
     {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => err_res(e),
+    }
+}
+
+/// Update Rackdeck on one machine. Owner only: it replaces the binary and restarts the process.
+async fn update_node(
+    State(state): State<ApiState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    match resolve_principal(&headers, &state).await {
+        Ok(Principal::Owner { .. }) => {}
+        Ok(_) => return err_res(CoreError::Forbidden("only the owner can update machines".into())),
+        Err(r) => return r,
+    }
+    let result = if node_id == state.local_node_id {
+        match update::self_update().await {
+            Ok(Some(v)) => {
+                // Answer first, then swap this process for the new binary.
+                tokio::spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let err = update::restart_self();
+                    eprintln!("rackdeck: updated on disk but couldn't restart ({err}); restart it manually");
+                });
+                Ok(Some(v))
+            }
+            other => other.map_err(CoreError::Runtime),
+        }
+    } else {
+        state.agent_bus.update(&node_id).await
+    };
+    let ok = result.is_ok();
+    let ev = AuditEvent {
+        id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
+        ts: now_unix_secs(),
+        actor: "you (web)".into(),
+        action: "update".into(),
+        target: node_id.clone(),
+        ok,
+        reason: result.as_ref().err().map(|e| e.to_string()),
+    };
+    let _ = state.audit_repo.append_audit(ev.clone()).await;
+    let _ = state.ws_tx.send(ServerWsEvent::Audit { ev });
+    match result {
+        Ok(v) => Json(serde_json::json!({ "ok": true, "updatedTo": v })).into_response(),
         Err(e) => err_res(e),
     }
 }

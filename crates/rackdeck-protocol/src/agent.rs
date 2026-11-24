@@ -26,6 +26,8 @@ pub enum AgentOp {
         app_id: String,
         lines: usize,
     },
+    /// Download the latest release, swap the binary, restart after reporting back.
+    Update,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +36,8 @@ pub enum AgentOutput {
     Done,
     App { app: ManagedApp },
     Lines { lines: Vec<String> },
+    /// New version installed, or None when already current.
+    Updated { version: Option<String> },
 }
 
 /// Agent → controller result, posted on the next check-in.

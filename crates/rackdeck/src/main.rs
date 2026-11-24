@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use rackdeck_api::{build_router, AgentBus, ApiState, AssetProvider};
+use rackdeck_api::{build_router, update, AgentBus, ApiState, AssetProvider};
 use rackdeck_core::{FleetRepository, FleetService, NodeOps, NodeStatus};
 use rackdeck_discovery::NetworkDiscovery;
 use rackdeck_node::LocalNodeAdapter;
@@ -358,7 +358,17 @@ async fn run_remote_agent(controller: String, initial_token: String) -> Result<(
             last_err = None;
         }
 
+        // An update result has now reached the controller, so it's safe to restart into the new binary.
+        let restart = results
+            .iter()
+            .any(|r| matches!(r.result, Ok(AgentOutput::Updated { version: Some(_) })));
         results.clear(); // delivered
+        if restart {
+            tracing::info!("updated, restarting agent");
+            let err = update::restart_self();
+            tracing::warn!("couldn't restart after update ({err}); exiting so the service manager restarts it");
+            std::process::exit(1);
+        }
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
             let commands: Vec<AgentCommand> = val
@@ -393,6 +403,7 @@ async fn run_agent_command(local: &LocalNodeAdapter, op: AgentOp) -> Result<Agen
         AgentOp::AppAction { app_id, action } => local.app_action(&app_id, action).await.map(|_| AgentOutput::Done),
         AgentOp::Deploy { spec } => local.deploy_app(spec).await.map(|app| AgentOutput::App { app }),
         AgentOp::Logs { app_id, lines } => local.tail_logs(&app_id, lines).await.map(|lines| AgentOutput::Lines { lines }),
+        AgentOp::Update => return update::self_update().await.map(|version| AgentOutput::Updated { version }),
     }
     .map_err(|e| e.to_string())
 }
@@ -406,13 +417,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h" | "help")) {
         println!(
-            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
+            "Rackdeck {}\n\nUsage:\n  rackdeck                                              Start control plane + local node (default :7420)\n  rackdeck agent --controller <URL> --token <TOKEN>     Join a remote machine to a controller\n  rackdeck update                                       Install the latest release over this binary\n\nEnvironment:\n  RACKDECK_PORT       HTTP listen port (default: 7420)\n  RACKDECK_DB         SQLite database path (default: rackdeck.db)\n  RACKDECK_PASSWORD   Require login; without it Rackdeck only listens on 127.0.0.1\n  RACKDECK_RELAY_URL  Connect relay WebSocket URL",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
     }
     if matches!(args.get(1).map(|s| s.as_str()), Some("--version" | "-V")) {
         println!("rackdeck {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("update") {
+        // Running services pick up the new binary on their next restart (or use Update in the dashboard).
+        match update::self_update().await {
+            Ok(Some(v)) => println!("Updated rackdeck {} -> {v}. Restart rackdeck (or its service) to use it.", update::CURRENT),
+            Ok(None) => println!("rackdeck {} is already the latest.", update::CURRENT),
+            Err(e) => {
+                eprintln!("update failed: {e}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
     if args.get(1).map(|s| s.as_str()) == Some("agent") {
@@ -437,6 +460,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
         return run_remote_agent(controller, token).await;
+    }
+
+    if let Some(cmd) = args.get(1) {
+        // Don't fall through to starting the server on a typo or a command this version doesn't know.
+        eprintln!("unknown command `{cmd}`. Run `rackdeck --help`.");
+        std::process::exit(2);
     }
 
     let port: u16 = std::env::var("RACKDECK_PORT")

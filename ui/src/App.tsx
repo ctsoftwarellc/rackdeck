@@ -207,6 +207,16 @@ const DEPLOY_PRESETS = [
 ];
 
 /** Mirrors the args rackdeck-node builds for `docker run`, so the preview matches what actually runs. */
+/** "0.2.0" < "0.2.1"; non-numeric parts count as 0. */
+function isOlderVersion(a: string, b: string): boolean {
+  const pa = a.split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = b.split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0);
+  }
+  return false;
+}
+
 function dockerRunPreview(name: string, image: string, hostPort: string, contPort: string, envText: string): string {
   const parts = ["docker run -d", `--name ${name.trim() || "<app-name>"}`, "--restart unless-stopped"];
   if (hostPort.trim() && contPort.trim()) parts.push(`-p ${hostPort.trim()}:${contPort.trim()}`);
@@ -236,6 +246,9 @@ export function App() {
   const [samples, setSamples] = useState<Record<string, TelemetrySample[]>>({});
   const [connState, setConnState] = useState<"live" | "reconnecting" | "offline">("reconnecting");
   const [rttMs, setRttMs] = useState<number | null>(null);
+  // Latest published Rackdeck release, and per-machine update progress/errors.
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<Record<string, string>>({});
   // Which node is this controller, and is it password-protected (no password = localhost only).
   const [controller, setController] = useState<{ nodeId: string | null; passwordSet: boolean }>({
     nodeId: null,
@@ -426,6 +439,13 @@ export function App() {
       wsRef.current?.close();
     };
   }, [authState.checked, authState.authed]);
+
+  useEffect(() => {
+    fetch("https://api.github.com/repos/ctsoftwarellc/rackdeck/releases/latest")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d?.tag_name && setLatestVersion(String(d.tag_name).replace(/^v/, "")))
+      .catch(() => {});
+  }, []);
 
   // Poll real Connect tunnel status cleanly
   useEffect(() => {
@@ -716,6 +736,37 @@ export function App() {
     });
   }, [nodes, machineQuery, machineStatusFilter]);
 
+  const behind = (n: Node) => Boolean(latestVersion && n.status === "online" && isOlderVersion(n.version, latestVersion));
+  const behindNodes = nodes.filter(behind);
+
+  async function updateNode(n: Node) {
+    const isController = n.id === primaryNode?.id;
+    setUpdateMsg((m) => ({ ...m, [n.id]: "Updating…" }));
+    try {
+      const r = await fetch(`/api/v1/nodes/${encodeURIComponent(n.id)}/update`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error ?? `update failed (${r.status})`);
+      if (!d.updatedTo) {
+        setUpdateMsg((m) => ({ ...m, [n.id]: "Already up to date" }));
+      } else if (isController) {
+        setUpdateMsg((m) => ({ ...m, [n.id]: `Updated to ${d.updatedTo}, restarting…` }));
+        window.setTimeout(() => location.reload(), 5000);
+      } else {
+        setUpdateMsg((m) => ({ ...m, [n.id]: `Updated to ${d.updatedTo}` }));
+      }
+    } catch (e) {
+      setUpdateMsg((m) => ({ ...m, [n.id]: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
+  // Joined machines first; the controller restarts itself, so it goes last.
+  async function updateAll() {
+    const remotes = behindNodes.filter((n) => n.id !== primaryNode?.id);
+    await Promise.all(remotes.map(updateNode));
+    const self = behindNodes.find((n) => n.id === primaryNode?.id);
+    if (self) await updateNode(self);
+  }
+
   const primaryNode = nodes.find((n) => n.id === controller.nodeId) ?? nodes[0] ?? null;
   const detailNode =
     route.page === "machine"
@@ -992,6 +1043,19 @@ export function App() {
               </div>
             </div>
 
+            {latestVersion && behindNodes.length > 0 && (
+              <div
+                className="card"
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", marginBottom: 12, flexWrap: "wrap" }}
+              >
+                <span>
+                  Rackdeck {latestVersion} is out. {behindNodes.length === 1 ? "1 machine is" : `${behindNodes.length} machines are`} on an older version.
+                </span>
+                <button type="button" className="btn btn-primary" onClick={updateAll}>
+                  Update all
+                </button>
+              </div>
+            )}
             <div className="card tbl-wrap">
               <table className="tbl">
                 <thead>
@@ -1111,12 +1175,22 @@ export function App() {
                   </span>
                 </h1>
                 <div className="page-sub" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                  <span>{detailNode.os} · {detailNode.hw.cpuCores} cores</span>
+                  <span>{detailNode.os} · {detailNode.hw.cpuCores} cores · Rackdeck {detailNode.version}</span>
                   {detailNode.lanIp && <Copy value={detailNode.lanIp} />}
                   {detailNode.tailscaleIp && <Copy value={detailNode.tailscaleIp} />}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                {updateMsg[detailNode.id] && (
+                  <span role="status" style={{ fontSize: 12.5, color: "var(--text-2)" }}>
+                    {updateMsg[detailNode.id]}
+                  </span>
+                )}
+                {behind(detailNode) && (
+                  <button type="button" className="btn" onClick={() => updateNode(detailNode)}>
+                    Update to {latestVersion}
+                  </button>
+                )}
                 {detailNode.id === primaryNode?.id && (
                   <button
                     type="button"

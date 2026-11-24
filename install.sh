@@ -1,16 +1,24 @@
 #!/usr/bin/env sh
 set -eu
 
+# Usage:
+#   curl -fsSL https://get.rackdeck.dev | sh                                   install or update the binary
+#   curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD=... sh -s -- --service
+#                                                                              run the dashboard as a service
+#   curl -fsSL https://get.rackdeck.dev | sh -s -- --controller URL --join TOKEN
+#                                                                              join this machine as an agent service
+
 REPO="${RACKDECK_REPO:-ctsoftwarellc/rackdeck}"
 VERSION="${RACKDECK_VERSION:-latest}"
-INSTALL_DIR="${RACKDECK_INSTALL_DIR:-/usr/local/bin}"
 CONTROLLER=""
 JOIN_TOKEN=""
+SERVICE=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --controller) CONTROLLER="$2"; shift 2 ;;
     --join|--token) JOIN_TOKEN="$2"; shift 2 ;;
+    --service) SERVICE=1; shift ;;
     *) shift ;;
   esac
 done
@@ -29,6 +37,17 @@ case "$OS" in
   *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
+# macOS installs into a folder you own, so the dashboard's Update button can replace the binary
+# without sudo. Linux services run as root, so /usr/local/bin is fine there.
+if [ "$OS" = "darwin" ]; then
+  INSTALL_DIR="${RACKDECK_INSTALL_DIR:-$HOME/.rackdeck/bin}"
+else
+  INSTALL_DIR="${RACKDECK_INSTALL_DIR:-/usr/local/bin}"
+fi
+BIN="${INSTALL_DIR}/rackdeck"
+SUDO=""
+[ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
 if [ "$VERSION" = "latest" ]; then
   URL="https://github.com/${REPO}/releases/latest/download/rackdeck-${TARGET}.tar.gz"
 else
@@ -39,35 +58,53 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "Downloading Rackdeck (${TARGET})..."
-curl -fsSL "$URL" -o "${TMP}/rackdeck.tar.gz"
+if ! curl -fsSL "$URL" -o "${TMP}/rackdeck.tar.gz"; then
+  echo "No Rackdeck build for ${TARGET} at ${URL}" >&2
+  exit 1
+fi
 tar -xzf "${TMP}/rackdeck.tar.gz" -C "$TMP"
 
+mkdir -p "$INSTALL_DIR" 2>/dev/null || $SUDO mkdir -p "$INSTALL_DIR"
 if [ -w "$INSTALL_DIR" ]; then
-  install -m 0755 "${TMP}/rackdeck" "${INSTALL_DIR}/rackdeck"
+  install -m 0755 "${TMP}/rackdeck" "$BIN"
 else
-  sudo install -m 0755 "${TMP}/rackdeck" "${INSTALL_DIR}/rackdeck"
+  $SUDO install -m 0755 "${TMP}/rackdeck" "$BIN"
+fi
+echo "Installed $("$BIN" --version) to ${BIN}"
+
+if [ "$OS" = "darwin" ] && [ "$INSTALL_DIR" != "/usr/local/bin" ]; then
+  # Keep `rackdeck` on PATH. The link points at the user-owned binary, so updates flow through.
+  if [ -w /usr/local/bin ]; then
+    ln -sf "$BIN" /usr/local/bin/rackdeck
+  else
+    $SUDO mkdir -p /usr/local/bin && $SUDO ln -sf "$BIN" /usr/local/bin/rackdeck
+  fi
 fi
 
-echo "Installed rackdeck to ${INSTALL_DIR}/rackdeck"
-BIN="${INSTALL_DIR}/rackdeck"
-SUDO=""
-[ "$(id -u)" -ne 0 ] && SUDO="sudo"
+HAS_SYSTEMD=""
+if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  HAS_SYSTEMD=1
+fi
 
-if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
-  echo "Joining controller at ${CONTROLLER}..."
-  # Run the agent as a background service so it survives logout and reboots.
-  # After the first check-in it uses the key saved in its state file; the join token is just for first contact.
-  if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    $SUDO tee /etc/systemd/system/rackdeck-agent.service >/dev/null <<UNIT
+# install_service NAME DESCRIPTION ENV_LINES ARGS...
+# ENV_LINES is "KEY=value" lines. On Linux they go in a root-only env file, on macOS in the plist.
+install_service() {
+  name="$1"; desc="$2"; envs="$3"; shift 3
+  if [ -n "$HAS_SYSTEMD" ]; then
+    $SUDO mkdir -p /etc/rackdeck
+    printf '%s\n' "$envs" | $SUDO tee "/etc/rackdeck/${name}.env" >/dev/null
+    $SUDO chmod 600 "/etc/rackdeck/${name}.env"
+    $SUDO tee "/etc/systemd/system/${name}.service" >/dev/null <<UNIT
 [Unit]
-Description=Rackdeck agent
+Description=${desc}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=${BIN} agent --controller ${CONTROLLER} --token ${JOIN_TOKEN}
-Environment=RACKDECK_AGENT_STATE=/var/lib/rackdeck/agent.json
+ExecStart=${BIN} $*
+EnvironmentFile=/etc/rackdeck/${name}.env
 StateDirectory=rackdeck
+WorkingDirectory=/var/lib/rackdeck
 Restart=always
 RestartSec=3
 
@@ -75,34 +112,69 @@ RestartSec=3
 WantedBy=multi-user.target
 UNIT
     $SUDO systemctl daemon-reload
-    $SUDO systemctl enable --now rackdeck-agent
-    echo "Agent running as systemd service rackdeck-agent (logs: journalctl -u rackdeck-agent -f)"
+    $SUDO systemctl enable "$name" >/dev/null 2>&1
+    $SUDO systemctl restart "$name"
+    echo "Running as systemd service ${name} (logs: journalctl -u ${name} -f)"
   elif [ "$OS" = "darwin" ]; then
-    PLIST="$HOME/Library/LaunchAgents/dev.rackdeck.agent.plist"
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-    cat > "$PLIST" <<PLIST
+    label="dev.rackdeck.${name#rackdeck-}"
+    plist="$HOME/Library/LaunchAgents/${label}.plist"
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HOME/.rackdeck"
+    args_xml="<string>${BIN}</string>"
+    for a in "$@"; do args_xml="${args_xml}<string>${a}</string>"; done
+    env_xml=""
+    for kv in $envs; do env_xml="${env_xml}<key>${kv%%=*}</key><string>${kv#*=}</string>"; done
+    cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>dev.rackdeck.agent</string>
-  <key>ProgramArguments</key><array>
-    <string>${BIN}</string><string>agent</string>
-    <string>--controller</string><string>${CONTROLLER}</string>
-    <string>--token</string><string>${JOIN_TOKEN}</string>
-  </array>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>${args_xml}</array>
+  <key>EnvironmentVariables</key><dict>${env_xml}</dict>
+  <key>WorkingDirectory</key><string>$HOME/.rackdeck</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/rackdeck-agent.log</string>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/rackdeck-agent.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/${name}.log</string>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/${name}.log</string>
 </dict></plist>
 PLIST
-    launchctl unload "$PLIST" 2>/dev/null || true
-    launchctl load -w "$PLIST"
-    echo "Agent running as a LaunchAgent (logs: ~/Library/Logs/rackdeck-agent.log)"
+    chmod 600 "$plist"
+    launchctl unload "$plist" 2>/dev/null || true
+    launchctl load -w "$plist"
+    echo "Running as a LaunchAgent (logs: ~/Library/Logs/${name}.log)"
   else
+    return 1
+  fi
+}
+
+if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
+  echo "Joining controller at ${CONTROLLER}..."
+  # After the first check-in the agent uses the key in its state file; the join token is only for first contact.
+  if [ "$OS" = "darwin" ]; then
+    STATE="$HOME/.config/rackdeck/agent.json"  # same place earlier installs used, so the key carries over
+  else
+    STATE="/var/lib/rackdeck/agent.json"
+  fi
+  if ! install_service rackdeck-agent "Rackdeck agent" "RACKDECK_AGENT_STATE=${STATE}" \
+      agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"; then
     echo "No systemd found, running in the foreground. It stops when this shell closes."
     exec "$BIN" agent --controller "$CONTROLLER" --token "$JOIN_TOKEN"
   fi
+elif [ -n "$SERVICE" ]; then
+  if [ -z "${RACKDECK_PASSWORD:-}" ]; then
+    echo "Set RACKDECK_PASSWORD for the dashboard service, e.g. curl ... | RACKDECK_PASSWORD=... sh -s -- --service" >&2
+    exit 1
+  fi
+  case "$RACKDECK_PASSWORD" in *[[:space:]\<\>\&]*)
+    echo "Use a password without spaces or < > & characters for the service." >&2; exit 1 ;;
+  esac
+  if [ "$OS" = "darwin" ]; then DB="$HOME/.rackdeck/rackdeck.db"; else DB="/var/lib/rackdeck/rackdeck.db"; fi
+  if ! install_service rackdeck "Rackdeck dashboard" "RACKDECK_PASSWORD=${RACKDECK_PASSWORD}
+RACKDECK_DB=${DB}"; then
+    echo "No systemd found. Start it yourself: RACKDECK_PASSWORD=... rackdeck" >&2
+    exit 1
+  fi
+  echo "Dashboard: http://<this-machine>:${RACKDECK_PORT:-7420}"
 else
-  echo "Run: rackdeck   (opens control panel on http://127.0.0.1:7420)"
+  echo "Run: RACKDECK_PASSWORD=... rackdeck   (dashboard on port 7420)"
+  echo "Already running as a service? Restart it, or use Update in the dashboard next time."
 fi

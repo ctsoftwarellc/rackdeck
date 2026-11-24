@@ -182,7 +182,13 @@ if [ -n "$CONTROLLER" ] && [ -n "$JOIN_TOKEN" ]; then
   fi
   # A machine that already joined has its own key, so an old join command is fine for it.
   if ! $SUDO grep -q agentKey "$STATE" 2>/dev/null; then
-    CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer ${JOIN_TOKEN}" "${CONTROLLER}/api/v1/agent/join-check" || true)"
+    # Send only the token's hash: this request isn't encrypted.
+    if command -v sha256sum >/dev/null 2>&1; then
+      TOKEN_SHA="$(printf '%s' "$JOIN_TOKEN" | sha256sum | cut -d' ' -f1)"
+    else
+      TOKEN_SHA="$(printf '%s' "$JOIN_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
+    fi
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "X-Join-Check: ${TOKEN_SHA}" "${CONTROLLER}/api/v1/agent/join-check" || true)"
     if [ "$CODE" = "401" ]; then
       echo "This join command expired or was already used. Click + Add machine in the dashboard for a new one." >&2
       exit 1

@@ -563,16 +563,21 @@ async fn scan_network(State(state): State<ApiState>, headers: HeaderMap) -> Resp
 }
 
 /// Lets the installer tell "expired join command" apart from "can't reach the dashboard". Doesn't use up the token.
+/// Takes the token's sha256 (X-Join-Check), so the token itself never crosses the network in the clear.
 async fn join_check(State(state): State<ApiState>, headers: HeaderMap) -> StatusCode {
-    let token = headers
-        .get(header::AUTHORIZATION)
+    let want = headers
+        .get("x-join-check")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    match state.join_tokens.read().await.get(token) {
-        Some(&exp) if now_unix_secs() <= exp => StatusCode::NO_CONTENT,
-        _ => StatusCode::UNAUTHORIZED,
-    }
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let now = now_unix_secs();
+    let valid = state
+        .join_tokens
+        .read()
+        .await
+        .iter()
+        .any(|(t, &exp)| now <= exp && hex::encode(Sha256::digest(t.as_bytes())) == want);
+    if valid { StatusCode::NO_CONTENT } else { StatusCode::UNAUTHORIZED }
 }
 
 async fn issue_join_token(State(state): State<ApiState>, headers: HeaderMap) -> Response {

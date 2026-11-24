@@ -1,116 +1,89 @@
 # Rackdeck
 
-**All your machines in one clean, secure dashboard — home PCs, NVIDIA GPU rigs, Apple Silicon Macs, and cloud VPSs.**
+One dashboard for the computers you own: a Mac, a GPU box, a home server, a VPS.
 
-Built as a single Rust binary (`rackdeck`, ~4.7 MB) with an embedded React UI and bundled SQLite (WAL). Works 100% free on your home LAN or existing Tailscale/WireGuard network with **no account required** and **zero product telemetry**.
+Rackdeck is a single file of about 6 MB with the web dashboard built in. It used about 13 MB of RAM on an M-series MacBook in our testing. It doesn't need Docker, Postgres or Redis; its data lives in one SQLite file. It's open source under Apache-2.0, needs no account, and sends no analytics.
 
-[Quickstart](#quickstart-account-free) · **[Set up with an AI agent](#set-up-with-an-ai-agent)** · [What v0.1 manages](#what-v01-manages) · [Support matrix](#support-matrix-v01) · [Security](#permissions-privacy--relay-boundaries)
+**[Try the live demo](https://rackdeck.dev/demo/)** · [Install](#install) · [Add a machine](#add-a-machine) · [Features](#what-you-can-do) · [Security](docs/security.md)
 
----
+## Install
 
-## Quickstart (Account-Free)
-
-### Install prebuilt binary (Linux `x86_64` & macOS Apple Silicon)
 ```bash
 curl -fsSL https://get.rackdeck.dev | sh
-
-# Start all-in-one control plane + local node (http://127.0.0.1:7420)
-RACKDECK_PASSWORD="choose-a-strong-password" rackdeck
+RACKDECK_PASSWORD='choose-a-strong-password' rackdeck
 ```
 
-### Or build from source (requires Rust + Bun)
+Open http://localhost:7420 and log in with that password.
+
+Without `RACKDECK_PASSWORD`, Rackdeck only listens on this machine, so nothing else on your network can reach it. Set a password to open it from your phone or another computer, or to add machines.
+
+To run the dashboard as a background service that starts at boot:
+
 ```bash
-cd ui && bun install && bun run build && cd ..
-cargo build --release -p rackdeck -p rackdeck-relay
-RACKDECK_PASSWORD="choose-a-strong-password" ./target/release/rackdeck
+curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='choose-a-strong-password' sh -s -- --service
 ```
 
-Without `RACKDECK_PASSWORD`, Rackdeck only listens on 127.0.0.1. Set a password if you want to open it from another device or join other machines.
+## Add a machine
 
-### Join a second machine (VPS, GPU rig, or Mac)
-1. Open the dashboard and click **`+ Add machine`**.
-2. Copy the join command. The token in it works once and expires after 15 minutes.
-3. Run it on the other machine:
-```bash
-curl -fsSL https://get.rackdeck.dev | sh -s -- --controller http://<controller-ip>:7420 --join <rd_join_...>
-```
+1. In the dashboard, click **+ Add machine** and copy the command.
+2. Run it on the other machine.
 
-The installer sets the agent up as a service (systemd on Linux, a LaunchAgent on macOS), so it keeps running after you log out and comes back after a reboot. The agent saves its key in `/var/lib/rackdeck/agent.json` (Linux service) or `~/.config/rackdeck/agent.json`, so restarts don't need a new token. Machines that stop checking in show as offline after about 15 seconds.
+The machine shows up within a few seconds. The command works once and expires after 15 minutes. The installer tries each of the dashboard's addresses (Tailscale and your home network) and uses the one that answers, sets the agent up as a service, and tells you plainly if something is wrong, such as an expired command.
 
----
+Joined machines connect out to the dashboard, so you don't open any ports on them. Their check-ins are encrypted and signed both ways. On Windows, use WSL with systemd turned on; the installer explains how if it's off.
+
+## What you can do
+
+- **See every machine at once.** Live CPU, memory, disk, network, and NVIDIA GPU use, VRAM and temperature. Machines that stop reporting show as offline within about 20 seconds.
+- **Manage apps.** Docker containers and local model servers (Ollama, vLLM, `mlx_lm`). Start, stop, restart, deploy an image, and follow logs.
+- **Use a terminal in the browser** on the dashboard's machine. Owner only, and each session goes in the audit log.
+- **Push secrets to your machines.** Set an environment variable once, like `CLAUDE_CODE_OAUTH_TOKEN`, pick machines, and new terminals on those machines have it. Values are encrypted in storage and on the way.
+- **Let AI coding tools help.** The built-in MCP server lets Claude Code, Codex or Cursor read status or deploy apps with a token you scope and can revoke. Tokens never get a terminal.
+- **Update everything with one button.** When a new version is out, **Update all** updates each joined machine and then the dashboard, without reinstalling.
+- **Find your tailnet.** If Tailscale is installed, Rackdeck lists your other devices. It only reads; it never signs into your Tailscale account.
+- **Check the audit log** for joins, updates, app actions, secret changes and AI tool calls.
+
+## Platforms
+
+| | Dashboard | Agent | Prebuilt download |
+| --- | --- | --- | --- |
+| macOS, Apple Silicon | Yes | Yes | Yes |
+| Linux, x86_64 | Yes | Yes | Yes |
+| Linux, arm64 (Raspberry Pi 4/5) | Builds, not yet tested | Builds, not yet tested | Not yet, [build from source](#build-from-source) |
+| Windows | Through WSL | Through WSL | Linux build inside WSL |
 
 ## Set up with an AI agent
 
-Using **Claude Code, Codex, Cursor, OpenCode, or Antigravity**? Copy the prompt below and paste it into your agent — it will install Rackdeck on your machine, set a strong password, wire up a background service so it survives reboots, and verify everything is running cleanly.
+Paste this into Claude Code, Codex or Cursor on the machine you want as the dashboard:
 
 ```text
-Install and set up Rackdeck (https://github.com/ctsoftwarellc/rackdeck) on this machine so I can manage my servers, containers, and local GPUs/models from one dashboard.
-
-Please do the following step by step:
-1. Check this machine's OS, CPU arch, whether Docker is installed, whether nvidia-smi or Apple Silicon is present, and whether Tailscale is connected (`tailscale ip -4`).
-2. Install the Rackdeck binary using:
-   curl -fsSL https://get.rackdeck.dev | sh
-   (If my OS/arch isn't in prebuilt releases yet, clone https://github.com/ctsoftwarellc/rackdeck and build from source with bun + cargo.)
-3. Create a persistent data directory (`~/.local/share/rackdeck` on macOS/user Linux or `/var/lib/rackdeck` for system-wide Linux) and generate a strong random password for `RACKDECK_PASSWORD` (ask me if I prefer my own).
-4. Set up Rackdeck as a background service that starts on boot:
-   - On Linux: create and enable a systemd service running `/usr/local/bin/rackdeck` with `RACKDECK_PORT=7420`, `RACKDECK_DB=<data-dir>/rackdeck.db`, and `RACKDECK_PASSWORD` in an env file with `0600` permissions.
-   - On macOS: create and load a LaunchAgent plist (`~/Library/LaunchAgents/dev.rackdeck.plist`) with `RACKDECK_PORT=7420`, `RACKDECK_DB=<data-dir>/rackdeck.db`, and `RACKDECK_PASSWORD`.
-   - Do NOT open any router ports or expose port 7420 publicly to the internet unless I explicitly ask.
-5. Verify it is healthy with `curl -sf http://127.0.0.1:7420/api/v1/health`.
-6. Give me:
-   - The local URL (`http://127.0.0.1:7420`) and Tailscale URL (if Tailscale is running)
-   - My login password and where the env/service file lives
-   - The exact one-liner to add my next machine (`rackdeck agent --controller ... --token ...`)
-   - Ask if I also want to link a second machine or set up a read-only MCP token.
+Install Rackdeck (https://github.com/ctsoftwarellc/rackdeck) on this machine as a background service.
+1. Generate a strong password, or ask me for one.
+2. Run: curl -fsSL https://get.rackdeck.dev | RACKDECK_PASSWORD='<password>' sh -s -- --service
+3. Check it's healthy: curl -sf http://127.0.0.1:7420/api/v1/health
+4. Tell me the URL to open, the password, and how to add my next machine (+ Add machine in the dashboard).
+Don't open router ports or expose port 7420 to the internet.
 ```
 
----
+## Build from source
 
-## What v0.1 Manages
+Needs Rust and Bun.
 
-- **Per-Host Telemetry:** Live CPU, RAM (labeled **Unified Memory** on Apple Silicon), Disk, Network (`↓`/`↑`), and NVIDIA GPU utilization/VRAM/temperature via `nvidia-smi`. *(Note: telemetry and local AI runners are tracked **per host** — Rackdeck does not pool VRAM across separate machines.)*
-- **Docker Containers:** List containers, **Deploy** new Docker images (with ports, env vars, and quick presets), `Start` / `Stop` / `Restart`, and stream live `docker logs -f`.
-- **Existing Local AI Runners:** Detects running `ninfer`, `mlx_lm.server`, `vllm`, and `ollama serve` processes per host so you see them alongside Docker apps.
-- **Browser Terminal (Owner-Only):** Fast interactive shell tab in the bottom drawer with every command recorded in the audit log.
-- **LAN & Tailscale Discovery:** Probes Tailscale peers via `tailscale status --json` on port `7420` and generates 60-second QR pairing invitations.
-- **Scoped MCP (`/mcp`, Streamable HTTP `2025-11-25`):** Give Cursor, Claude Code, or Codex `read` (`node_health`, `container_logs_tail`) or `deploy` (`app_action`, `deploy_app`) tokens with full audit logging and **zero SSH keys**. Terminal access is never grantable to MCP tokens.
-- **Optional Rackdeck Connect (`rackdeck-relay`):** Self-hostable or managed binary tunnel relay (`rackdeck.connect.v1`) for remote access and `*.rackdev.app` / custom HTTPS routes through CGNAT.
+```bash
+cd ui && bun install && bun run build && cd ..
+cargo build --release -p rackdeck
+RACKDECK_PASSWORD='choose-a-strong-password' ./target/release/rackdeck
+```
 
-> **Looking for a 300+ one-click Docker Compose app catalog today?** Start with [Coolify](https://coolify.io/docs/services/all) — it is far more mature for one-click app templates. Rackdeck is built for people who want a tiny, fast Rust control plane unifying Linux VPSs, NVIDIA GPU boxes, and Macs in a clean Tailscale-style console.
+## Security
 
----
+How the dashboard, agents and relay connect, how check-ins and secrets are encrypted, and the known limits: [docs/security.md](docs/security.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-## Support Matrix (v0.1)
+## Pricing
 
-| Target | Control Plane (`rackdeck`) | Remote Agent (`rackdeck agent`) | Notes |
-| :--- | :--- | :--- | :--- |
-| **macOS (Apple Silicon `arm64`)** | Tested | Tested | Unified Memory telemetry, native `mlx_lm` / `ollama` detection, Docker optional (OrbStack/Docker Desktop). |
-| **Linux (`x86_64` / `arm64`)** | Supported | Supported | Ubuntu 24.04 / Debian recommended; Docker CLI for containers; `nvidia-smi` for NVIDIA GPU/VRAM/temp (`ninfer`, `vLLM`, `Ollama`). |
-| **Relay (`rackdeck-relay`)** | — | — | Tested on Linux / macOS; designed for $5–$7 AWS Lightsail + Caddy auto-TLS. |
+- **Rackdeck Community** is free forever. Everything in this repository, self-hosted, with no limit on machines.
+- **Rackdeck Cloud** ($19/month or $190/year) will host the dashboard, connectivity, remote MCP access, updates and backups for you. It isn't open yet.
 
----
+## License
 
-## Permissions, Privacy & Relay Boundaries
-
-- **Zero Product Telemetry:** The open-source binaries send zero analytics, crash reports, or phone-home pings. The only outbound connections `rackdeck` makes are:
-  1. Checking in to your own controller (in `rackdeck agent` mode).
-  2. Opening a Connect WebSocket tunnel **only** if you explicitly enable Connect.
-- **Listening Ports:** `rackdeck` listens on `RACKDECK_PORT` (default `7420`). `rackdeck-relay` listens on `RACKDECK_RELAY_PORT` (default `7430`).
-- **Auth & Scoping:**
-  - Setting `RACKDECK_PASSWORD` enforces `HttpOnly; SameSite=Lax` cookie sessions on all web UI and `/api/ws` routes.
-  - MCP bearer tokens are stored as SHA-256 hashes, scoped to `read` or `deploy`, revocable instantly, and never grant shell access.
-  - Join tokens expire after 15 minutes and are single-use; pairing invitations expire after 60 seconds.
-- **Relay TLS & Offline Exit Path:**
-  - Public HTTPS routes (`*.rackdev.app` or custom domains — kept on a separate registrable domain from `rackdeck.dev` for cookie/origin isolation) terminate TLS at Caddy in front of `rackdeck-relay`; the agent-to-relay tunnel authenticates with an Ed25519 challenge-response handshake (`rackdeck.connect.v1`).
-  - If `rackdeck-relay` goes down or you cancel Connect, **your local dashboard, LAN access, Tailscale access, Docker containers, and local SQLite database keep working normally** with zero lock-in.
-
-See [SECURITY.md](./SECURITY.md) and [ARCHITECTURE.md](./ARCHITECTURE.md) for full details.
-
----
-
-## License & Pricing
-
-- **Core (`rackdeck`, `rackdeck-relay`, embedded UI):** **Apache-2.0** — free to self-host forever with unlimited machines on your own LAN or Tailscale.
-- **Optional Managed Services (upcoming):**
-  - **Rackdeck Connect ($9/mo):** Hosted global relay, `*.rackdev.app` + custom auto-TLS domains, and push notifications so you don't have to manage Tailscale/CGNAT.
-  - **Rackdeck Cloud ($19/mo):** Managed control plane + Connect + encrypted Litestream S3 backups.
+Apache-2.0

@@ -23,6 +23,9 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::verify_challenge;
 
+mod account;
+pub use account::AccountConfig;
+
 struct TunnelSession {
     slug: String,
     node_id: String,
@@ -54,6 +57,8 @@ pub struct RelayState {
     usage_repo: Option<Arc<dyn UsageRepository>>,
     tenant_repo: Option<Arc<dyn TenantRepository>>,
     billing: BillingConfig,
+    accounts: AccountConfig,
+    account_mem: account::SharedAccountMem,
 }
 
 #[derive(Serialize)]
@@ -90,6 +95,22 @@ impl RelayState {
                 success_url: "https://rackdeck.dev/connect/success".into(),
                 cancel_url: "https://rackdeck.dev/connect/cancel".into(),
             },
+            accounts: AccountConfig::default(),
+            account_mem: Default::default(),
+        }
+    }
+
+    pub fn with_accounts(mut self, accounts: AccountConfig) -> Self {
+        self.accounts = accounts;
+        self
+    }
+
+    /// Close a slug's tunnel with a GOAWAY reason (e.g. subscription ended).
+    async fn drop_tunnel(&self, slug: &str, reason: &'static [u8]) {
+        if let Some(sess) = self.sessions.write().await.remove(slug) {
+            if let Ok(goaway) = Frame::new(FrameType::GoAway, 0, Bytes::from_static(reason)).encode() {
+                let _ = sess.tx.send(goaway).await;
+            }
         }
     }
 
@@ -148,6 +169,13 @@ fn verify_stripe_signature(secret: &str, sig_header: &str, payload: &[u8]) -> bo
     let (Some(ts), Some(v1)) = (ts, v1) else {
         return false;
     };
+    // Stripe's default tolerance: reject replays of old events.
+    let fresh = ts
+        .parse::<u64>()
+        .is_ok_and(|t| rackdeck_core::now_unix_secs().abs_diff(t) <= 300);
+    if !fresh {
+        return false;
+    }
     let mut signed = Vec::with_capacity(ts.len() + 1 + payload.len());
     signed.extend_from_slice(ts.as_bytes());
     signed.push(b'.');
@@ -166,10 +194,10 @@ pub fn relay_router(state: RelayState) -> Router {
     Router::new()
         .route("/_rackdeck/tunnel", get(ws_tunnel_upgrade))
         .route("/_rackdeck/stats", get(stats_handler))
-        .route("/_rackdeck/checkout", post(create_checkout_session))
         .route("/_rackdeck/stripe/webhook", post(stripe_webhook_handler))
         .route("/connect/{slug}", any(proxy_path_root))
         .route("/connect/{slug}/{*rest}", any(proxy_path_rest))
+        .merge(account::account_routes())
         .fallback(any(proxy_host_fallback))
         .with_state(state)
 }
@@ -181,142 +209,6 @@ fn is_valid_slug(slug: &str) -> bool {
         && b[0].is_ascii_alphanumeric()
         && b[b.len() - 1].is_ascii_alphanumeric()
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CheckoutBody {
-    slug: String,
-    public_key_hex: String,
-}
-
-async fn create_checkout_session(
-    State(state): State<RelayState>,
-    Json(body): Json<CheckoutBody>,
-) -> Response {
-    let slug = body.slug.trim().to_ascii_lowercase();
-    if !is_valid_slug(&slug) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "slug must be 3-32 lowercase alphanumeric/hyphen chars" })),
-        )
-            .into_response();
-    }
-    let pk = body.public_key_hex.trim().to_ascii_lowercase();
-    if pk.len() != 64 || !pk.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "invalid publicKeyHex" })),
-        )
-            .into_response();
-    }
-
-    // 1. Check slug availability BEFORE creating a Stripe Checkout Session
-    if let Some(repo) = &state.tenant_repo {
-        if let Ok(Some(existing)) = repo.get_tenant(&slug).await {
-            if existing.active
-                && existing.public_key_hex.as_deref().is_some_and(|k| k != pk)
-            {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({ "error": format!("slug '{slug}' is already taken") })),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    let (Some(secret_key), Some(price_id)) = (
-        &state.billing.stripe_secret_key,
-        &state.billing.stripe_price_id,
-    ) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": "Stripe checkout not configured on this relay (set STRIPE_SECRET_KEY and RACKDECK_STRIPE_PRICE_ID)" })),
-        )
-            .into_response();
-    };
-
-    // 2. Call Stripe Checkout Sessions API via curl -K - (secret passed via stdin, never in argv)
-    use tokio::io::AsyncWriteExt;
-    use tokio::process::Command;
-
-    let mut child = match Command::new("curl")
-        .args([
-            "-sS",
-            "-K",
-            "-",
-            "-X",
-            "POST",
-            "https://api.stripe.com/v1/checkout/sessions",
-            "--data-urlencode",
-            "mode=subscription",
-            "--data-urlencode",
-            &format!("line_items[0][price]={price_id}"),
-            "--data-urlencode",
-            "line_items[0][quantity]=1",
-            "--data-urlencode",
-            &format!("client_reference_id={slug}"),
-            "--data-urlencode",
-            &format!("metadata[slug]={slug}"),
-            "--data-urlencode",
-            &format!("metadata[public_key_hex]={pk}"),
-            "--data-urlencode",
-            "metadata[plan]=connect",
-            "--data-urlencode",
-            &format!("success_url={}", state.billing.success_url),
-            "--data-urlencode",
-            &format!("cancel_url={}", state.billing.cancel_url),
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("failed to invoke curl: {e}") })),
-            )
-                .into_response();
-        }
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let cfg = format!("header = \"Authorization: Bearer {secret_key}\"\n");
-        let _ = stdin.write_all(cfg.as_bytes()).await;
-    }
-
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        child.wait_with_output(),
-    )
-    .await
-    {
-        Ok(Ok(o)) => o,
-        _ => {
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({ "error": "Stripe API timed out" })),
-            )
-                .into_response();
-        }
-    };
-
-    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
-    if let Some(url) = parsed.get("url").and_then(|v| v.as_str()) {
-        return Json(serde_json::json!({ "url": url, "slug": slug })).into_response();
-    }
-    let stripe_err = parsed
-        .pointer("/error/message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Stripe checkout session creation failed");
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(serde_json::json!({ "error": stripe_err })),
-    )
-        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -336,81 +228,32 @@ async fn stripe_webhook_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(secret) = &state.billing.stripe_webhook_secret {
-        let sig = headers
-            .get("stripe-signature")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !verify_stripe_signature(secret, sig, &body) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid stripe signature" })),
-            )
-                .into_response();
-        }
+    let Some(repo) = state.tenant_repo.clone() else {
+        return Json(serde_json::json!({ "received": true, "billing": "disabled" })).into_response();
+    };
+    // Billing changes who can use a slug, so unsigned events are never trusted.
+    let Some(secret) = &state.billing.stripe_webhook_secret else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "set RACKDECK_STRIPE_WEBHOOK_SECRET to accept Stripe events" })),
+        )
+            .into_response();
+    };
+    let sig = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_stripe_signature(secret, sig, &body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid or stale stripe signature" })),
+        )
+            .into_response();
     }
     let Ok(ev) = serde_json::from_slice::<StripeEvent>(&body) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let Some(repo) = &state.tenant_repo else {
-        return Json(serde_json::json!({ "received": true, "billing": "disabled" })).into_response();
-    };
-
-    let obj = &ev.data.object;
-    match ev.event_type.as_str() {
-        "checkout.session.completed" => {
-            let slug = obj
-                .pointer("/metadata/slug")
-                .or_else(|| obj.pointer("/client_reference_id"))
-                .or_else(|| obj.pointer("/custom_fields/0/text/value"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let public_key_hex = obj
-                .pointer("/metadata/public_key_hex")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_ascii_lowercase());
-            let customer_id = obj
-                .get("customer")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let plan = obj
-                .pointer("/metadata/plan")
-                .and_then(|v| v.as_str())
-                .unwrap_or("connect")
-                .to_string();
-            if is_valid_slug(&slug.to_ascii_lowercase()) {
-                let _ = repo
-                    .upsert_tenant(ConnectTenant {
-                        slug: slug.to_ascii_lowercase(),
-                        public_key_hex,
-                        plan,
-                        active: true,
-                        stripe_customer_id: customer_id,
-                    })
-                    .await;
-            }
-        }
-        "customer.subscription.deleted" | "invoice.payment_failed" => {
-            if let Some(customer_id) = obj.get("customer").and_then(|v| v.as_str()) {
-                let _ = repo.set_tenant_active_by_customer(customer_id, false).await;
-            }
-            if let Some(slug) = obj.pointer("/metadata/slug").and_then(|v| v.as_str()) {
-                if let Some(sess) = state.sessions.write().await.remove(&slug.to_ascii_lowercase()) {
-                    if let Ok(goaway) = Frame::new(
-                        FrameType::GoAway,
-                        0,
-                        Bytes::from_static(b"subscription_cancelled"),
-                    )
-                    .encode()
-                    {
-                        let _ = sess.tx.send(goaway).await;
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-
+    account::handle_billing_event(&state, &repo, &ev.event_type, &ev.data.object).await;
     Json(serde_json::json!({ "received": true })).into_response()
 }
 
@@ -497,32 +340,45 @@ async fn handle_tunnel_socket(socket: WebSocket, state: RelayState) {
         return;
     }
 
-    // 4. Enforce paid Connect subscription + pin Ed25519 key (TOFU if unbound)
+    // 4. A slug belongs to the first key that used it (or the dashboard linked to it);
+    //    hosted relays also need an active subscription.
     let slug = hello.slug.to_ascii_lowercase();
-    if state.billing.require_subscription {
-        let allowed = match &state.tenant_repo {
-            Some(repo) => match repo.get_tenant(&slug).await {
-                Ok(Some(mut t)) if t.active => match t.public_key_hex.as_deref() {
-                    Some(pk) => pk == hello.public_key_hex,
-                    None => {
-                        t.public_key_hex = Some(hello.public_key_hex.clone());
-                        let _ = repo.upsert_tenant(t).await;
-                        true
-                    }
-                },
-                _ => false,
-            },
-            None => false,
+    let pk = hello.public_key_hex.to_ascii_lowercase();
+    let tenant = match &state.tenant_repo {
+        Some(repo) => repo.get_tenant(&slug).await.ok().flatten(),
+        None => None,
+    };
+    let refuse: Option<&'static [u8]> = match &tenant {
+        Some(t) if t.public_key_hex.as_deref().is_some_and(|k| k != pk) => Some(b"slug_taken"),
+        Some(t) if state.billing.require_subscription && !t.active => Some(b"subscription_required"),
+        None if state.billing.require_subscription => Some(b"subscription_required"),
+        _ => None,
+    };
+    if let Some(reason) = refuse {
+        let _ = ws_tx
+            .send(Message::Binary(
+                Frame::new(FrameType::GoAway, 0, Bytes::from_static(reason))
+                    .encode()
+                    .unwrap_or_default(),
+            ))
+            .await;
+        return;
+    }
+    if let Some(repo) = &state.tenant_repo {
+        let pin = match tenant {
+            Some(t) if t.public_key_hex.is_none() => Some(ConnectTenant { public_key_hex: Some(pk.clone()), ..t }),
+            None => Some(ConnectTenant {
+                slug: slug.clone(),
+                public_key_hex: Some(pk.clone()),
+                plan: "self-hosted".into(),
+                active: false,
+                stripe_customer_id: None,
+                account_id: None,
+            }),
+            Some(_) => None,
         };
-        if !allowed {
-            let _ = ws_tx
-                .send(Message::Binary(
-                    Frame::new(FrameType::GoAway, 0, Bytes::from_static(b"subscription_required"))
-                        .encode()
-                        .unwrap_or_default(),
-                ))
-                .await;
-            return;
+        if let Some(t) = pin {
+            let _ = repo.upsert_tenant(t).await;
         }
     }
 

@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use rackdeck_connect::relay::{relay_router, BillingConfig, RelayState};
+use rackdeck_connect::relay::{relay_router, AccountConfig, BillingConfig, RelayState};
 use rackdeck_store::SqliteStore;
 use tracing_subscriber::EnvFilter;
 
@@ -33,7 +33,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let store = SqliteStore::open(&db_path)?;
-    let state = RelayState::new(audience, Some(store.clone())).with_billing(store, billing);
+    let mut accounts = AccountConfig {
+        public_url: std::env::var("RACKDECK_PUBLIC_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{port}")),
+        resend_api_key: std::env::var("RESEND_API_KEY").ok().filter(|s| !s.is_empty()),
+        mail_from: std::env::var("RACKDECK_MAIL_FROM").unwrap_or_else(|_| "Rackdeck <login@rackdev.app>".into()),
+        ..AccountConfig::default()
+    };
+    match std::env::var("RACKDECK_SESSION_SECRET") {
+        Ok(s) if s.len() >= 32 => accounts.session_secret = s.into_bytes(),
+        _ => tracing::warn!("RACKDECK_SESSION_SECRET unset (or under 32 chars): logins reset when the relay restarts"),
+    }
+    if accounts.resend_api_key.is_none() {
+        tracing::warn!("RESEND_API_KEY unset: login links are printed to this log instead of emailed");
+    }
+
+    let state = RelayState::new(audience, Some(store.clone()))
+        .with_billing(store, billing)
+        .with_accounts(accounts);
     let app = relay_router(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

@@ -538,6 +538,65 @@ export function App() {
     setJoinCmd(joinData.command ?? "");
   }
 
+  // Rackdeck account (hosted Connect): is this dashboard linked, and the pending link code if signing in.
+  const [account, setAccount] = useState<{ linked: boolean; active: boolean; slugs: string[]; accountUrl?: string } | null>(null);
+  const [accountErr, setAccountErr] = useState<string | null>(null);
+  const [linkReq, setLinkReq] = useState<{ userCode: string; url: string; pollToken: string } | null>(null);
+
+  function loadAccount() {
+    fetch("/api/v1/account")
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error ?? "couldn't check your account");
+        setAccount(d);
+        setAccountErr(null);
+      })
+      .catch((e) => setAccountErr(e.message));
+  }
+
+  useEffect(() => {
+    if (route.page === "network") loadAccount();
+  }, [route.page]);
+
+  async function startAccountLink(node: Node) {
+    const slug = (connectSlugInput.trim() || node.connectSlug || node.name)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 32);
+    setAccountErr(null);
+    const r = await fetch("/api/v1/account/link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return setAccountErr(d.error ?? "couldn't start sign-in");
+    setLinkReq(d);
+    window.open(d.url, "_blank", "noopener");
+  }
+
+  // Poll the relay until the code is approved or expires.
+  useEffect(() => {
+    if (!linkReq) return;
+    const id = window.setInterval(async () => {
+      const r = await fetch("/api/v1/account/link/poll", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pollToken: linkReq.pollToken }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d.status === "linked") {
+        setLinkReq(null);
+        loadAccount();
+      } else if (d.status === "expired" || !r.ok) {
+        setLinkReq(null);
+        setAccountErr(d.error ?? "The sign-in code expired. Try again.");
+      }
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [linkReq]);
+
   async function toggleConnect(node: Node) {
     const slug = (connectSlugInput.trim() || node.connectSlug || node.name).toLowerCase();
     const res = await fetch("/api/v1/connect", {
@@ -1445,6 +1504,33 @@ export function App() {
                       relay server, and the relay forwards a public address like <span className="mono">you.rackdev.app</span> back
                       to your dashboard. No router ports, no VPN app on your phone. The hosted relay ($9/mo) isn't live yet.
                     </p>
+                    <div style={{ marginTop: 12, fontSize: 13, color: "var(--text-2)" }} role="status">
+                      {linkReq ? (
+                        <>
+                          Approve code <span className="mono" style={{ color: "var(--text-1)", fontWeight: 600 }}>{linkReq.userCode}</span> in
+                          the tab that just opened.{" "}
+                          <a href={linkReq.url} target="_blank" rel="noopener">Open it again</a>
+                        </>
+                      ) : account?.linked ? (
+                        <>
+                          Linked to your Rackdeck account
+                          {account.slugs.length > 0 && <> as <span className="mono">{account.slugs.join(", ")}</span></>}.{" "}
+                          {account.active ? "Connect subscription active." : "No active subscription yet."}{" "}
+                          {account.accountUrl && (
+                            <a href={account.accountUrl} target="_blank" rel="noopener">
+                              Manage account
+                            </a>
+                          )}
+                        </>
+                      ) : (
+                        primaryNode && (
+                          <button type="button" className="btn" onClick={() => startAccountLink(primaryNode)}>
+                            Sign in to Rackdeck
+                          </button>
+                        )
+                      )}
+                      {accountErr && <div style={{ marginTop: 6, color: "var(--crit)" }}>{accountErr}</div>}
+                    </div>
                     <details style={{ marginTop: 10, fontSize: 13, color: "var(--text-2)" }}>
                       <summary style={{ cursor: "pointer", color: "var(--text-1)" }}>Run your own relay instead</summary>
                       <p style={{ lineHeight: 1.55 }}>

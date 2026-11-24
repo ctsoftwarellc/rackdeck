@@ -266,4 +266,26 @@ pub struct ConnectTenant {
     pub plan: String,
     pub active: bool,
     pub stripe_customer_id: Option<String>,
+    /// Rackdeck account that linked this controller (hosted Connect).
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+/// A person on the hosted service, identified by email (magic-link login).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub id: String,
+    pub email: String,
+    pub stripe_customer_id: Option<String>,
+    /// Paid Connect subscription is current.
+    pub active: bool,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountKey {
+    Id,
+    Email,
+    StripeCustomer,
 }

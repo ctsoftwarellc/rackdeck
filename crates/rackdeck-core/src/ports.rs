@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    AccessTokenRecord, AppAction, AuditEvent, ConnectRoute, ConnectTenant, CoreResult, DeploySpec,
+    Account, AccountKey, AccessTokenRecord, AppAction, AuditEvent, ConnectRoute, ConnectTenant, CoreResult, DeploySpec,
     DiscoveredPeer, ManagedApp, Node, TelemetrySample, TokenScope,
 };
 
@@ -72,6 +72,9 @@ pub trait TenantRepository: Send + Sync {
     async fn upsert_tenant(&self, tenant: ConnectTenant) -> CoreResult<()>;
     async fn get_tenant(&self, slug: &str) -> CoreResult<Option<ConnectTenant>>;
     async fn set_tenant_active_by_customer(&self, customer_id: &str, active: bool) -> CoreResult<()>;
+    async fn list_tenants(&self) -> CoreResult<Vec<ConnectTenant>>;
+    async fn upsert_account(&self, account: Account) -> CoreResult<()>;
+    async fn find_account(&self, by: AccountKey, value: &str) -> CoreResult<Option<Account>>;
 }
 
 #[async_trait]

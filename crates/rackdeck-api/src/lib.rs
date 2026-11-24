@@ -73,7 +73,9 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/agent/checkin", post(agent_checkin))
         .route("/api/v1/pair", post(start_pairing))
         .route("/api/v1/connect", post(toggle_connect))
-        .route("/api/v1/connect/checkout", post(start_connect_checkout))
+        .route("/api/v1/account", get(account_status))
+        .route("/api/v1/account/link", post(account_link))
+        .route("/api/v1/account/link/poll", post(account_link_poll))
         .route("/api/v1/connect/routes", get(list_routes).post(add_route))
         .route("/api/v1/connect/routes/{id}", delete(remove_route))
         .route("/api/v1/tokens", get(list_tokens).post(create_token))
@@ -658,79 +660,90 @@ async fn toggle_connect(
     Json(serde_json::json!({ "node": updated })).into_response()
 }
 
+/// The relay's HTTP base, from its tunnel URL (wss://relay/_rackdeck/tunnel -> https://relay).
+fn relay_http_base(state: &ApiState) -> String {
+    let http = state
+        .relay_ws_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1);
+    http.strip_suffix("/_rackdeck/tunnel").unwrap_or(&http).to_string()
+}
+
+/// Call the Connect relay's account API and pass its JSON answer through.
+async fn relay_call(state: &ApiState, path: &str, body: Option<serde_json::Value>) -> Response {
+    let url = format!("{}{path}", relay_http_base(state));
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args(["-sS", "-m", "10", "-w", "\n%{http_code}"]);
+    if let Some(b) = &body {
+        cmd.args(["-X", "POST", "-H", "Content-Type: application/json", "--data-binary", &b.to_string()]);
+    }
+    let out = match cmd.arg(&url).kill_on_drop(true).output().await {
+        Ok(o) if o.status.success() => o,
+        _ => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("couldn't reach the Connect relay at {}", relay_http_base(state)) })),
+            )
+                .into_response()
+        }
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (resp, code) = text.rsplit_once('\n').unwrap_or((&text, "502"));
+    let code = code
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .and_then(|c| StatusCode::from_u16(c).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let val: serde_json::Value = serde_json::from_str(resp)
+        .unwrap_or_else(|_| serde_json::json!({ "error": "the relay sent an unexpected reply" }));
+    (code, Json(val)).into_response()
+}
+
+async fn require_owner(headers: &HeaderMap, state: &ApiState) -> Result<(), Response> {
+    match resolve_principal(headers, state).await? {
+        Principal::Owner { .. } => Ok(()),
+        _ => Err(err_res(CoreError::Forbidden("owner only".into()))),
+    }
+}
+
+fn controller_pk(state: &ApiState) -> String {
+    hex::encode(state.signing_key.verifying_key().to_bytes())
+}
+
+/// Is this dashboard linked to a Rackdeck account, and is Connect paid for?
+async fn account_status(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = require_owner(&headers, &state).await {
+        return r;
+    }
+    relay_call(&state, &format!("/account/controller?pk={}", controller_pk(&state)), None).await
+}
+
 #[derive(Deserialize)]
-struct StartCheckoutBody {
+struct LinkBody {
     slug: String,
 }
 
-async fn start_connect_checkout(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    Json(body): Json<StartCheckoutBody>,
-) -> Response {
-    let principal = match resolve_principal(&headers, &state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    if let Err(e) = principal.authorize(Capability::ManageNetwork, None) {
-        return err_res(e);
+/// Start linking: returns a code and URL for the owner to approve while logged in on the relay.
+async fn account_link(State(state): State<ApiState>, headers: HeaderMap, Json(body): Json<LinkBody>) -> Response {
+    if let Err(r) = require_owner(&headers, &state).await {
+        return r;
     }
+    let payload = serde_json::json!({ "slug": body.slug.trim().to_ascii_lowercase(), "publicKeyHex": controller_pk(&state) });
+    relay_call(&state, "/account/link/start", Some(payload)).await
+}
 
-    let relay_http = state
-        .relay_ws_url
-        .replace("wss://", "https://")
-        .replace("ws://", "http://");
-    let checkout_url = relay_http
-        .strip_suffix("/_rackdeck/tunnel")
-        .map(|base| format!("{base}/_rackdeck/checkout"))
-        .unwrap_or_else(|| format!("{relay_http}/_rackdeck/checkout"));
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkPollBody {
+    poll_token: String,
+}
 
-    let pk_hex = hex::encode(state.signing_key.verifying_key().to_bytes());
-    let payload = serde_json::json!({
-        "slug": body.slug.trim().to_ascii_lowercase(),
-        "publicKeyHex": pk_hex
-    })
-    .to_string();
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        tokio::process::Command::new("curl")
-            .args([
-                "-sS",
-                "-w",
-                "\n%{http_code}",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                &payload,
-                &checkout_url,
-            ])
-            .output(),
-    )
-    .await;
-
-    match output {
-        Ok(Ok(out)) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let (resp_body, code_str) = text.rsplit_once('\n').unwrap_or((&text, "502"));
-            let code = code_str
-                .trim()
-                .parse::<u16>()
-                .ok()
-                .and_then(|c| StatusCode::from_u16(c).ok())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
-            let val: serde_json::Value = serde_json::from_str(resp_body)
-                .unwrap_or_else(|_| serde_json::json!({ "error": "relay checkout unreachable" }));
-            (code, Json(val)).into_response()
-        }
-        _ => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": "failed to reach Connect relay checkout endpoint" })),
-        )
-            .into_response(),
+async fn account_link_poll(State(state): State<ApiState>, headers: HeaderMap, Json(body): Json<LinkPollBody>) -> Response {
+    if let Err(r) = require_owner(&headers, &state).await {
+        return r;
     }
+    relay_call(&state, "/account/link/poll", Some(serde_json::json!({ "pollToken": body.poll_token }))).await
 }
 
 async fn list_routes(State(state): State<ApiState>, headers: HeaderMap) -> Response {

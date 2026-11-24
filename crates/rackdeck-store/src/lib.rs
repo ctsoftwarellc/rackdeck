@@ -4,7 +4,7 @@ use std::thread;
 
 use async_trait::async_trait;
 use rackdeck_core::{
-    now_unix_secs, AccessTokenRecord, AuditEvent, AuditRepository, ConnectRoute, ConnectTenant,
+    now_unix_secs, AccessTokenRecord, Account, AccountKey, AuditEvent, AuditRepository, ConnectRoute, ConnectTenant,
     CoreError, CoreResult, FleetRepository, Node, RouteRepository, TenantRepository,
     TokenRepository, TokenScope, UsageRepository,
 };
@@ -46,6 +46,9 @@ enum DbCmd {
     UpsertTenant(ConnectTenant, oneshot::Sender<CoreResult<()>>),
     GetTenant(String, oneshot::Sender<CoreResult<Option<ConnectTenant>>>),
     SetTenantActiveByCustomer(String, bool, oneshot::Sender<CoreResult<()>>),
+    ListTenants(oneshot::Sender<CoreResult<Vec<ConnectTenant>>>),
+    UpsertAccount(Account, oneshot::Sender<CoreResult<()>>),
+    FindAccount(AccountKey, String, oneshot::Sender<CoreResult<Option<Account>>>),
 }
 
 /// Dedicated bounded-queue SQLite store (WAL, foreign_keys, busy_timeout).
@@ -129,6 +132,13 @@ fn init_schema(conn: &Connection) -> CoreResult<()> {
             tenant TEXT PRIMARY KEY,
             bytes_in INTEGER NOT NULL DEFAULT 0,
             bytes_out INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            stripe_customer_id TEXT,
+            payload_json TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS connect_tenants (
@@ -506,6 +516,59 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
             })();
             let _ = reply.send(res);
         }
+        DbCmd::ListTenants(reply) => {
+            let res = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT payload_json FROM connect_tenants ORDER BY slug")
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+                Ok(rows
+                    .filter_map(Result::ok)
+                    .filter_map(|s| serde_json::from_str(&s).ok())
+                    .collect())
+            })();
+            let _ = reply.send(res);
+        }
+        DbCmd::UpsertAccount(acct, reply) => {
+            let res = serde_json::to_string(&acct)
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|json| {
+                    conn.execute(
+                        "INSERT INTO accounts (id, email, stripe_customer_id, payload_json) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(id) DO UPDATE SET email = excluded.email,
+                           stripe_customer_id = excluded.stripe_customer_id, payload_json = excluded.payload_json",
+                        params![acct.id, acct.email.to_ascii_lowercase(), acct.stripe_customer_id, json],
+                    )
+                    .map(|_| ())
+                    .map_err(|e| CoreError::Storage(e.to_string()))
+                });
+            let _ = reply.send(res);
+        }
+        DbCmd::FindAccount(by, value, reply) => {
+            let col = match by {
+                AccountKey::Id => "id",
+                AccountKey::Email => "email",
+                AccountKey::StripeCustomer => "stripe_customer_id",
+            };
+            let value = if by == AccountKey::Email { value.to_ascii_lowercase() } else { value };
+            let res = conn
+                .query_row(
+                    &format!("SELECT payload_json FROM accounts WHERE {col} = ?1"),
+                    params![value],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| CoreError::Storage(e.to_string()))
+                .and_then(|raw| match raw {
+                    Some(s) => serde_json::from_str(&s)
+                        .map(Some)
+                        .map_err(|e| CoreError::Storage(e.to_string())),
+                    None => Ok(None),
+                });
+            let _ = reply.send(res);
+        }
         DbCmd::SetTenantActiveByCustomer(customer_id, active, reply) => {
             let res = (|| {
                 let mut stmt = conn
@@ -650,5 +713,14 @@ impl TenantRepository for SqliteStore {
     async fn set_tenant_active_by_customer(&self, customer_id: &str, active: bool) -> CoreResult<()> {
         self.call(|r| DbCmd::SetTenantActiveByCustomer(customer_id.to_string(), active, r))
             .await
+    }
+    async fn list_tenants(&self) -> CoreResult<Vec<ConnectTenant>> {
+        self.call(DbCmd::ListTenants).await
+    }
+    async fn upsert_account(&self, account: Account) -> CoreResult<()> {
+        self.call(|r| DbCmd::UpsertAccount(account, r)).await
+    }
+    async fn find_account(&self, by: AccountKey, value: &str) -> CoreResult<Option<Account>> {
+        self.call(|r| DbCmd::FindAccount(by, value.to_string(), r)).await
     }
 }

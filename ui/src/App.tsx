@@ -838,6 +838,18 @@ export function App() {
     }
   }
 
+  async function removeNode(n: Node) {
+    if (!confirm(`Remove ${n.name}? It disappears from the dashboard and its agent can't check in again. To add it back, use + Add machine.`)) return;
+    const r = await fetch(`/api/v1/nodes/${encodeURIComponent(n.id)}`, { method: "DELETE" });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      setUpdateMsg((m) => ({ ...m, [n.id]: d.error ?? `remove failed (${r.status})` }));
+      return;
+    }
+    setNodes((prev) => prev.filter((x) => x.id !== n.id));
+    location.hash = "#/";
+  }
+
   // Joined machines first; the controller restarts itself, so it goes last.
   async function updateAll() {
     const remotes = behindNodes.filter((n) => n.id !== primaryNode?.id);
@@ -1268,6 +1280,11 @@ export function App() {
                 {behind(detailNode) && (
                   <button type="button" className="btn" onClick={() => updateNode(detailNode)}>
                     Update to {latestVersion}
+                  </button>
+                )}
+                {detailNode.id !== primaryNode?.id && (
+                  <button type="button" className="btn" onClick={() => removeNode(detailNode)}>
+                    Remove
                   </button>
                 )}
                 {detailNode.id === primaryNode?.id && (

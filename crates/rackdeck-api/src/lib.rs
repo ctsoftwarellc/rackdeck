@@ -68,6 +68,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/api/v1/nodes/{node_id}/apps/{app_id}/{action}", post(run_app_action))
         .route("/api/v1/nodes/{node_id}/apps/{app_id}/logs", get(get_app_logs))
         .route("/api/v1/nodes/{node_id}/update", post(update_node))
+        .route("/api/v1/nodes/{node_id}", axum::routing::delete(remove_node))
         .route("/api/v1/discovery/scan", post(scan_network))
         .route("/api/v1/join-token", post(issue_join_token))
         .route("/api/v1/agent/checkin", post(agent_checkin))
@@ -342,6 +343,37 @@ async fn run_app_action(
 }
 
 /// Update Rackdeck on one machine. Owner only: it replaces the binary and restarts the process.
+async fn remove_node(
+    State(state): State<ApiState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    match resolve_principal(&headers, &state).await {
+        Ok(Principal::Owner { .. }) => {}
+        Ok(_) => return err_res(CoreError::Forbidden("only the owner can remove machines".into())),
+        Err(r) => return r,
+    }
+    if node_id == state.local_node_id {
+        return err_res(CoreError::InvalidInput("can't remove the machine running the dashboard".into()));
+    }
+    if let Err(e) = state.fleet_repo.delete_node(&node_id).await {
+        return err_res(e);
+    }
+    state.remote_apps.write().await.remove(&node_id);
+    let ev = AuditEvent {
+        id: format!("aud-{}", uuid::Uuid::new_v4().simple()),
+        ts: now_unix_secs(),
+        actor: "you (web)".into(),
+        action: "remove machine".into(),
+        target: node_id,
+        ok: true,
+        reason: None,
+    };
+    let _ = state.audit_repo.append_audit(ev.clone()).await;
+    let _ = state.ws_tx.send(ServerWsEvent::Audit { ev });
+    StatusCode::NO_CONTENT.into_response()
+}
+
 async fn update_node(
     State(state): State<ApiState>,
     Path(node_id): Path<String>,

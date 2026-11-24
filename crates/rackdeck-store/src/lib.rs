@@ -23,6 +23,7 @@ enum DbCmd {
     },
     GetAgentKey(String, oneshot::Sender<CoreResult<Option<String>>>),
     SetAgentKey(String, String, oneshot::Sender<CoreResult<()>>),
+    DeleteNode(String, oneshot::Sender<CoreResult<()>>),
     ListRoutes(oneshot::Sender<CoreResult<Vec<ConnectRoute>>>),
     UpsertRoute(ConnectRoute, oneshot::Sender<CoreResult<()>>),
     DeleteRoute(String, oneshot::Sender<CoreResult<bool>>),
@@ -195,6 +196,19 @@ fn handle_cmd(conn: &Connection, cmd: DbCmd) {
                 )
                 .optional()
                 .map_err(|e| CoreError::Storage(e.to_string()));
+            let _ = reply.send(res);
+        }
+        DbCmd::DeleteNode(node_id, reply) => {
+            let res = conn
+                .execute_batch("BEGIN")
+                .and_then(|_| conn.execute("DELETE FROM nodes WHERE id = ?1", params![node_id]))
+                .and_then(|_| conn.execute("DELETE FROM agent_keys WHERE node_id = ?1", params![node_id]))
+                .and_then(|_| conn.execute_batch("COMMIT"))
+                .map(|_| ())
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    CoreError::Storage(e.to_string())
+                });
             let _ = reply.send(res);
         }
         DbCmd::SetAgentKey(node_id, hash, reply) => {
@@ -613,6 +627,9 @@ impl FleetRepository for SqliteStore {
     }
     async fn set_agent_key_hash(&self, node_id: &str, key_hash: &str) -> CoreResult<()> {
         self.call(|r| DbCmd::SetAgentKey(node_id.to_string(), key_hash.to_string(), r)).await
+    }
+    async fn delete_node(&self, node_id: &str) -> CoreResult<()> {
+        self.call(|r| DbCmd::DeleteNode(node_id.to_string(), r)).await
     }
     async fn set_connect_state(
         &self,
